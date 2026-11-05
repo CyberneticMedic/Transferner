@@ -1,0 +1,11 @@
+# Species universe = regional occurrence list ∪ curated must-include list.
+taxa:
+  kingdoms: [Plantae]          # Fungi/lichens excluded permanently (D-017)
+  include_groups: [Tracheophyta, Bryophyta, Marchantiophyta]   # vascular + mosses + liverworts
+rank: species                  # infraspecific taxa collapsed to species
+min_regional_occurrences: 20   # any basisOfRecord, all GBIF publishers (iNat dominates)
+must_include: data/traits/must_include.txt        # always included regardless of count
+lookalike_groups: data/traits/lookalike_groups.csv
+traits: data/traits/species_traits.csv
+# Taxonomy backbone used to reconcile names across GBIF / ToL / USDA:
+backbone: gbif                 # ToL uses its own resolved taxonomy; join on accepted GBIF taxonKey where possible

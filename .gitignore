@@ -1,0 +1,22 @@
+# data & artifacts live on the training box, never in git
+/data/raw/
+/data/images/
+/data/cache/
+/data/manifests/
+/artifacts/
+*.tflite
+*.pte
+*.safetensors
+*.pt
+*.ckpt
+results/runs/*/
+!results/runs/.gitkeep
+# python
+__pycache__/
+*.egg-info/
+.venv*/
+# latex build junk
+proposal/*.aux
+proposal/*.log
+proposal/*.out
+proposal/*.blg

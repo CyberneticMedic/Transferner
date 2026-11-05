@@ -1,0 +1,11 @@
+# One accepted scientific name per line. Always included in the label set,
+# regardless of regional occurrence count. Seeded from the proposal; extend
+# with every forage-relevant species found during traits research.
+Daucus carota
+Conium maculatum
+Cicuta maculata
+Sambucus canadensis
+Menispermum canadense
+Phytolacca americana
+Vitis rotundifolia
+Toxicodendron radicans

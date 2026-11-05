@@ -1,0 +1,31 @@
+# Stage 2: still-image species ID.
+model:
+  hf_hub: hf-hub:imageomics/bioclip-2.5-vith14
+  input: 224
+  embed_dim: 1024
+text:
+  # Embeddings computed ONCE offline; text tower never ships.
+  templates:
+    - "a photo of {taxonomic}."
+    - "a photo of {scientific}."
+    - "a photo of {common}."
+    - "a photo of {scientific}, a.k.a. {common}."
+  combine: mean                 # average normalized template embeddings per species
+heads:
+  zero_shot: true
+  linear_probe:
+    init_from_text: true
+    epochs: 30
+    lr: 1.0e-3
+  lora:                         # experimental only (D-010)
+    enabled: false
+    r: 16
+    alpha: 32
+    target: [attn.in_proj, attn.out_proj]
+calibration:
+  method: temperature           # fit on val; reported via ECE + reliability diagrams
+output:
+  top_k: 5                      # Pl@ntNet-style relative percentages (D-013)
+efficiency:                     # research axis
+  token_merging_r: [0, 8, 16]   # ToMe tokens merged per block
+  drop_last_blocks: [0, 2, 4]

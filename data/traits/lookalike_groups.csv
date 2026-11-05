@@ -1,0 +1,12 @@
+group_id,scientific_name,role,lookalike_feature,source_url
+apiaceae_carrot,Daucus carota,edible,"hairy stem; root edible when young",
+apiaceae_carrot,Conium maculatum,toxic,"hairless stem with purple blotching",
+apiaceae_carrot,Cicuta maculata,toxic,,
+elder_water_hemlock,Sambucus canadensis,conditional,"ripe cooked berries only",
+elder_water_hemlock,Cicuta maculata,toxic,,
+dark_berries,Vitis rotundifolia,edible,,
+dark_berries,Vitis spp.,edible,,
+dark_berries,Menispermum canadense,toxic,"single crescent-shaped seed",
+dark_berries,Phytolacca americana,conditional,,
+ivy_bramble,Toxicodendron radicans,toxic,"contact dermatitis",
+ivy_bramble,Rubus spp.,edible,,

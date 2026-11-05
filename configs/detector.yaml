@@ -1,0 +1,25 @@
+# Stage 1: live scanner on the Tensor G4 NPU.
+model:
+  arch: ssdlite                 # primary; alt: yolo (comparison, Ultralytics AGPL)
+  backbone: mobilenetv4_conv_medium.e500_r256_in1k   # timm
+  input: 320                    # square, NPU-friendly static shape
+  heads:
+    genus: true                 # detection classes = genera
+    family: rollup              # family score = sum of member-genus scores (no extra head)
+  max_detections: 10
+labels:
+  boxes: pseudo                 # data/manifests/boxes.parquet from 08_pseudo_boxes
+  pseudo_labeler: google/owlv2-base-patch16-ensemble
+  prompts: [a plant, a leaf, a flower, a fruit, a tree trunk, a vine]
+  min_box_score: 0.25
+train:
+  epochs: 60
+  batch: 64
+  lr: 2.0e-3
+  sampler: class_balanced
+  aug: field                    # heavy: random-resized-crop, motion blur, downscale, color jitter
+quant:
+  ptq: true
+  qat_epochs: 5                 # run both, report PTQ vs QAT (D-011)
+runtime:
+  target_ips: [10, 30]          # inferences/sec over full-fps passthrough

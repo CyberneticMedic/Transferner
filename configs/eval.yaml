@@ -1,0 +1,8 @@
+metrics: [top1, top5, macro_f1, ece, ece_toxic, dmr_contact, dmr_ingestion, lookalike_confusion]
+levels: [species, genus, family]
+bootstrap: {n: 2000, ci: 0.95}
+paired_test: mcnemar
+bench:
+  warmup: 10
+  iters: 100
+  record: [latency_ms_p50, latency_ms_p90, peak_mem_mb, model_mb, delegate]

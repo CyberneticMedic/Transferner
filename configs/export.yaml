@@ -1,0 +1,15 @@
+target_device: pixel9pro        # Tensor G4, 16 GB RAM, Mali-G715 GPU, Google TPU (NPU)
+fallback_devices: [pixel8pro, pixel7, generic_arm64]
+detector:
+  formats: [litert]
+  precisions: [int8_full]       # full INT8 incl. activations for the NPU
+  delegate_order: [npu, gpu, cpu]
+bioclip:
+  formats: [litert, executorch]
+  precisions:
+    - fp16                      # reference
+    - w8a16                     # INT8 weights, FP16 activations  (expected default)
+    - w4a16                     # INT4 weights, FP16 activations
+    - w8a8_partial              # INT8 everywhere except sensitive layers (LN/softmax/last blocks)
+  delegate_order: [gpu, npu, cpu]   # GPU first for ViT-H; NPU attempted via AOT compile
+  latency_budget_s: 10

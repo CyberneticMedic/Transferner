@@ -1,0 +1,53 @@
+# Data pipeline config. Paths are relative to $TRANSFERNER_DATA (training box).
+root: ${TRANSFERNER_DATA}
+
+region:
+  country: US
+  # GADM level-1 IDs; filter on gadm.level1Gid in GBIF predicates.
+  gadm_level1: [USA.41_1, USA.34_1, USA.11_1, USA.43_1]   # SC, NC, GA, TN — verify IDs in 00_resolve
+  names: [South Carolina, North Carolina, Georgia, Tennessee]
+
+sources:
+  gbif:
+    api: https://api.gbif.org/v1
+    credentials_env: [GBIF_USER, GBIF_PWD, GBIF_EMAIL]   # occurrence downloads need an account
+  plantnet:
+    doi: 10.15468/gtebaa          # resolved to a datasetKey at runtime via /dataset/doi
+  tol200m:
+    hf_repo: imageomics/TreeOfLife-200M
+    catalog: dataset/catalog.parquet       # 16.8 GB, queried with DuckDB, never loaded into pandas
+    shard_res: 224                         # ToL shards are pre-resized 224x224
+
+images:
+  store_max_side: 640        # originals are resized on ingest; keeps detector/MNv4 headroom above 224
+  jpeg_quality: 92
+  prefer: source_url         # fetch originals (not 224 shards) so the detector can train >224
+
+caps:                        # per species, applied after dedup
+  default: 500
+  toxic_or_lookalike: 1000   # 2x, per DECISIONS D-009
+  min_images: 20             # species below this go to BioCLIP text-only (zero-shot) set
+
+thumbnails:
+  per_species: 5
+  allowed_licenses: [CC0, CC-BY, PD]   # app will ship publicly (D-019); no NC/ND/SA
+
+field_test:
+  # Pixel video walks, hand-labelled frames (boxes + genus) — the only real detector test (D-018)
+  path: field/
+  target_frames: 200
+
+splits:
+  ratios: {train: 0.70, val: 0.15}   # test is NOT a ratio: it is the leakage-free pool
+  group_by: observation_id            # never split one plant across splits
+  seed: 883
+
+leakage:
+  exclude_if_in_tol_catalog: true     # match GBIF gbifID <-> ToL source_id
+  phash_hamming_max: 6
+  # BioCLIP 2.5 trained on +19M images not in the public catalog, so also require
+  # test records newer than this date (set once the training-data cutoff is confirmed).
+  test_min_event_date: null
+
+priors:
+  record_state_month_counts: true      # for later GPS/season priors (D-014)

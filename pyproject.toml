@@ -1,0 +1,30 @@
+[project]
+name = "transferner"
+version = "0.1.0"
+description = "Live MobileNetV4 plant scanner + on-device BioCLIP 2.5 Huge species ID"
+requires-python = ">=3.11"
+# torch/torchvision are NOT listed: install the ROCm wheels first (see README).
+dependencies = [
+  "timm>=1.0",
+  "open_clip_torch>=2.30",
+  "pandas", "pyarrow", "duckdb",
+  "pyyaml", "tqdm", "requests",
+  "pillow", "imagehash",
+  "scikit-learn", "scipy",
+]
+
+[project.optional-dependencies]
+lora   = ["peft"]
+boxes  = ["transformers"]            # OWLv2 / Grounding DINO pseudo-labelling
+yolo   = ["ultralytics"]             # AGPL-3.0 — comparison detector only
+# Export toolchains are kept in a SEPARATE venv (CPU torch); they pin torch
+# versions that clash with ROCm wheels.
+export = ["litert-torch", "ai-edge-quantizer"]
+executorch = ["executorch"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

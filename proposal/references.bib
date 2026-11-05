@@ -1,0 +1,439 @@
+% Transferner -- CSCE 883 references (IEEE style via IEEEtran.bst)
+% Every entry below was checked on 2026-10-18 against a primary source
+% (publisher / proceedings page, Crossref DOI record, arXiv, Hugging Face,
+% or official docs). See REFERENCES.md for the source URL used for each.
+% Uncited entries are kept for the final report; BibTeX only prints cited ones.
+
+% ---- IEEEtran control: >6 authors -> "First Author et al." (IEEE rule) ----
+@IEEEtranBSTCTL{IEEEexample:BSTcontrol,
+  CTLuse_forced_etal       = "yes",
+  CTLmax_names_forced_etal = "6",
+  CTLnames_show_etal       = "1"
+}
+
+% ===================== Motivation: toxic plants & ID apps =====================
+@article{otter2021swipe,
+  author  = {Otter, J. and Mayer, S. and Tomaszewski, C. A.},
+  title   = {Swipe Right: a Comparison of Accuracy of Plant Identification Apps for Toxic Plants},
+  journal = {J. Med. Toxicol.},
+  volume  = {17},
+  number  = {1},
+  pages   = {42--47},
+  year    = {2021},
+  doi     = {10.1007/s13181-020-00803-6}
+}
+
+@article{long2023midwest,
+  author  = {Long, K. and Townesmith, A. and Overmiller, A. and Applequist, W. and Scalzo, A. and Buchanan, P. and Bitter, C. C.},
+  title   = {Plant identification applications do not reliably identify toxic and edible plants in the {A}merican {M}idwest},
+  journal = {Clin. Toxicol.},
+  volume  = {61},
+  number  = {7},
+  pages   = {524--528},
+  year    = {2023},
+  doi     = {10.1080/15563650.2023.2237282}
+}
+
+@article{mcneill2024queensland,
+  author  = {McNeill, I. and Knoeckel, R. and Goggin, A. and Wylie, C. and Isoardi, K.},
+  title   = {Accuracy of plant identification applications to identify plants in suspected poisoning cases referred to the {Q}ueensland {P}oisons {I}nformation {C}entre},
+  journal = {Toxicol. Commun.},
+  volume  = {8},
+  number  = {1},
+  pages   = {Art. no. 2377523},
+  year    = {2024},
+  doi     = {10.1080/24734306.2024.2377523}
+}
+
+@article{beuhler2025npds,
+  author  = {Beuhler, M. C. and Feldman, R. and Gummin, D. D. and Mowry, J. B. and Rivers, L. J. and Brown, K. and Pham, N. P. T. and Johnson-O'Leary, K. and Spyker, D. A. and Bronstein, A. C.},
+  title   = {2024 Annual report of the {N}ational {P}oison {D}ata {S}ystem ({NPDS}) from {A}merica's {P}oison {C}enters: 42nd annual report},
+  journal = {Clin. Toxicol.},
+  volume  = {63},
+  number  = {12},
+  pages   = {1029--1280},
+  year    = {2025},
+  doi     = {10.1080/15563650.2025.2571299}
+}
+
+@article{noor2022poisonous,
+  author  = {Noor, T. H. and Noor, A. and Elmezain, M.},
+  title   = {Poisonous Plants Species Prediction Using a Convolutional Neural Network and Support Vector Machine Hybrid Model},
+  journal = {Electronics},
+  volume  = {11},
+  number  = {22},
+  pages   = {Art. no. 3690},
+  year    = {2022},
+  doi     = {10.3390/electronics11223690}
+}
+
+@inproceedings{hridoy2021poisonous,
+  author    = {Hridoy, R. H. and Akter, F. and Afroz, M.},
+  title     = {An Efficient Computer Vision Approach for Rapid Recognition of Poisonous Plants by Classifying Leaf Images using Transfer Learning},
+  booktitle = {Proc. 12th Int. Conf. Comput. Commun. Netw. Technol. (ICCCNT)},
+  pages     = {1--7},
+  year      = {2021},
+  doi       = {10.1109/ICCCNT51525.2021.9580011}
+}
+
+@article{cho2019toxicherbs,
+  author  = {Cho, J. and Jeon, S. and Song, S. and Kim, S. and Kim, D. and Jeong, J. and Choi, G. and Lee, S.},
+  title   = {Identification of Toxic Herbs Using Deep Learning with Focus on the \emph{{S}inomenium Acutum}, \emph{{A}ristolochiae Manshuriensis Caulis}, \emph{{A}kebiae Caulis}},
+  journal = {Appl. Sci.},
+  volume  = {9},
+  number  = {24},
+  pages   = {Art. no. 5456},
+  year    = {2019},
+  doi     = {10.3390/app9245456}
+}
+
+% ============================ Plant data & benchmarks ============================
+@inproceedings{affouard2017plantnet,
+  author    = {Affouard, Antoine and Go{\"e}au, Herv{\'e} and Bonnet, Pierre and Lombardo, Jean-Christophe and Joly, Alexis},
+  title     = {{Pl@ntNet} app in the era of deep learning},
+  booktitle = {Proc. 5th Int. Conf. Learn. Represent. (ICLR)},
+  address   = {Toulon, France},
+  year      = {2017},
+  url       = {https://hal.science/hal-01629195v1}
+}
+
+@article{joly2014interactive,
+  author  = {Joly, A. and Go{\"e}au, H. and Bonnet, P. and Baki{\'c}, V. and Barbe, J. and Selmi, S. and Yahiaoui, I. and Carr{\'e}, J. and Mouysset, E. and Molino, J.-F. and Boujemaa, N. and Barth{\'e}l{\'e}my, D.},
+  title   = {Interactive plant identification based on social image data},
+  journal = {Ecol. Inform.},
+  volume  = {23},
+  pages   = {22--34},
+  month   = sep,
+  year    = {2014},
+  doi     = {10.1016/j.ecoinf.2013.07.006}
+}
+
+@inproceedings{garcin2021plantnet300k,
+  author    = {Garcin, Camille and Joly, Alexis and Bonnet, Pierre and Affouard, Antoine and Lombardo, Jean-Christophe and Chouet, Mathias and Servajean, Maximilien and Lorieul, Titouan and Salmon, Joseph},
+  title     = {{Pl@ntNet-300K}: a plant image dataset with high label ambiguity and a long-tailed distribution},
+  booktitle = {Proc. Neural Inf. Process. Syst. Track Datasets Benchmarks},
+  volume    = {1},
+  year      = {2021}
+}
+
+@inproceedings{vanhorn2018inat,
+  author    = {Van Horn, Grant and Mac Aodha, Oisin and Song, Yang and Cui, Yin and Sun, Chen and Shepard, Alex and Adam, Hartwig and Perona, Pietro and Belongie, Serge},
+  title     = {The {iNaturalist} Species Classification and Detection Dataset},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)},
+  pages     = {8769--8778},
+  year      = {2018},
+  doi       = {10.1109/CVPR.2018.00914}
+}
+
+@misc{gbif_plantnet_auto,
+  author       = {Affouard, A. and Joly, A. and Lombardo, J. and Champ, J. and Go{\"e}au, H. and Chouet, M. and Gresse, H. and Botella, C. and Bonnet, P.},
+  title        = {{Pl@ntNet} automatically identified occurrences},
+  howpublished = {Occurrence dataset, version 1.8, GBIF},
+  year         = {2023},
+  doi          = {10.15468/mma2ec},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{gbif_plantnet_obs,
+  author       = {Affouard, A. and Joly, A. and Lombardo, J. and Champ, J. and Go{\"e}au, H. and Chouet, M. and Gresse, H. and Bonnet, P.},
+  title        = {{Pl@ntNet} observations},
+  howpublished = {Occurrence dataset, version 1.9, GBIF},
+  year         = {2025},
+  doi          = {10.15468/gtebaa},
+  url          = {https://doi.org/10.15468/gtebaa},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{ncsu_toolbox,
+  author       = {{NC State Extension}},
+  title        = {North {C}arolina {E}xtension {G}ardener {P}lant {T}oolbox},
+  howpublished = {Online database},
+  url          = {https://plants.ces.ncsu.edu/},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+% ========================= BioCLIP family & TreeOfLife =========================
+@inproceedings{radford2021clip,
+  author    = {Radford, Alec and Kim, Jong Wook and Hallacy, Chris and Ramesh, Aditya and Goh, Gabriel and Agarwal, Sandhini and Sastry, Girish and Askell, Amanda and Mishkin, Pamela and Clark, Jack and Krueger, Gretchen and Sutskever, Ilya},
+  title     = {Learning Transferable Visual Models From Natural Language Supervision},
+  booktitle = {Proc. 38th Int. Conf. Mach. Learn. (ICML)},
+  volume    = {139},
+  pages     = {8748--8763},
+  year      = {2021}
+}
+
+@inproceedings{dosovitskiy2021vit,
+  author    = {Dosovitskiy, Alexey and Beyer, Lucas and Kolesnikov, Alexander and Weissenborn, Dirk and Zhai, Xiaohua and Unterthiner, Thomas and Dehghani, Mostafa and Minderer, Matthias and Heigold, Georg and Gelly, Sylvain and Uszkoreit, Jakob and Houlsby, Neil},
+  title     = {An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale},
+  booktitle = {Proc. Int. Conf. Learn. Represent. (ICLR)},
+  year      = {2021}
+}
+
+@inproceedings{stevens2024bioclip,
+  author    = {Stevens, Samuel and Wu, Jiaman and Thompson, Matthew J. and Campolongo, Elizabeth G. and Song, Chan Hee and Carlyn, David Edward and Dong, Li and Dahdul, Wasila M. and Stewart, Charles and Berger-Wolf, Tanya and Chao, Wei-Lun and Su, Yu},
+  title     = {{BioCLIP}: A Vision Foundation Model for the Tree of Life},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)},
+  pages     = {19412--19424},
+  year      = {2024},
+  doi       = {10.1109/CVPR52733.2024.01836}
+}
+
+% Pages: proceedings.neurips.cc lists 102778--102811; Crossref lists 113880--113913.
+% Publisher page used here.
+@inproceedings{gu2025bioclip2,
+  author    = {Gu, Jianyang and Stevens, Samuel and Campolongo, Elizabeth G. and Thompson, Matthew J. and Zhang, Net and Wu, Jiaman and Kopanev, Andrei and Mai, Zheda and White, Alexander E. and Balhoff, James and Dahdul, Wasila and Rubenstein, Daniel and Lapp, Hilmar and Berger-Wolf, Tanya and Chao, Wei-Lun and Su, Yu},
+  title     = {{BioCLIP} 2: Emergent Properties from Scaling Hierarchical Contrastive Learning},
+  booktitle = {Proc. Adv. Neural Inf. Process. Syst. (NeurIPS)},
+  volume    = {38},
+  pages     = {102778--102811},
+  year      = {2025},
+  doi       = {10.52202/085713-3436}
+}
+
+@misc{bioclip25,
+  author       = {{Imageomics Institute}},
+  title        = {{BioCLIP} 2.5 {H}uge (bioclip-2.5-vith14), version 1.0.0},
+  howpublished = {Hugging Face model repository},
+  year         = {2026},
+  doi          = {10.57967/hf/10131},
+  url          = {https://huggingface.co/imageomics/bioclip-2.5-vith14},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{treeoflife200m,
+  author       = {{Imageomics Institute}},
+  title        = {{TreeOfLife-200M}},
+  howpublished = {Hugging Face dataset repository},
+  year         = {2025},
+  url          = {https://huggingface.co/datasets/imageomics/TreeOfLife-200M},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{ilharco2021openclip,
+  author       = {Ilharco, Gabriel and Wortsman, Mitchell and Wightman, Ross and Gordon, Cade and Carlini, Nicholas and Taori, Rohan and Dave, Achal and Shankar, Vaishaal and Namkoong, Hongseok and Miller, John and Hajishirzi, Hannaneh and Farhadi, Ali and Schmidt, Ludwig},
+  title        = {{OpenCLIP}},
+  howpublished = {Zenodo, v0.1},
+  month        = jul,
+  year         = {2021},
+  doi          = {10.5281/zenodo.5143773}
+}
+
+% ============================== MobileNet family ==============================
+@misc{howard2017mobilenets,
+  author       = {Howard, Andrew G. and Zhu, Menglong and Chen, Bo and Kalenichenko, Dmitry and Wang, Weijun and Weyand, Tobias and Andreetto, Marco and Adam, Hartwig},
+  title        = {{MobileNets}: Efficient Convolutional Neural Networks for Mobile Vision Applications},
+  howpublished = {arXiv:1704.04861},
+  year         = {2017}
+}
+
+@inproceedings{sandler2018mobilenetv2,
+  author    = {Sandler, Mark and Howard, Andrew and Zhu, Menglong and Zhmoginov, Andrey and Chen, Liang-Chieh},
+  title     = {{MobileNetV2}: Inverted Residuals and Linear Bottlenecks},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)},
+  pages     = {4510--4520},
+  year      = {2018},
+  doi       = {10.1109/CVPR.2018.00474}
+}
+
+@inproceedings{howard2019mobilenetv3,
+  author    = {Howard, Andrew and Sandler, Mark and Chu, Grace and Chen, Liang-Chieh and Chen, Bo and Tan, Mingxing and Wang, Weijun and Zhu, Yukun and Pang, Ruoming and Vasudevan, Vijay and Le, Quoc V. and Adam, Hartwig},
+  title     = {Searching for {MobileNetV3}},
+  booktitle = {Proc. IEEE/CVF Int. Conf. Comput. Vis. (ICCV)},
+  pages     = {1314--1324},
+  year      = {2019},
+  doi       = {10.1109/ICCV.2019.00140}
+}
+
+@inproceedings{qin2024mobilenetv4,
+  author    = {Qin, Danfeng and Leichner, Chas and Delakis, Manolis and Fornoni, Marco and Luo, Shixin and Yang, Fan and Wang, Weijun and Banbury, Colby and Ye, Chengxi and Akin, Berkin and Aggarwal, Vaibhav and Zhu, Tenghui and Moro, Daniele and Howard, Andrew},
+  title     = {{MobileNetV4}: Universal Models for the Mobile Ecosystem},
+  booktitle = {Computer Vision -- ECCV 2024},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {15098},
+  publisher = {Springer},
+  address   = {Cham, Switzerland},
+  pages     = {78--96},
+  year      = {2024},
+  doi       = {10.1007/978-3-031-73661-2_5}
+}
+
+% ===================== Transfer learning, imbalance, distillation =====================
+@inproceedings{kornblith2019transfer,
+  author    = {Kornblith, Simon and Shlens, Jonathon and Le, Quoc V.},
+  title     = {Do Better {ImageNet} Models Transfer Better?},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)},
+  pages     = {2656--2666},
+  year      = {2019},
+  doi       = {10.1109/CVPR.2019.00277}
+}
+
+@inproceedings{yosinski2014transferable,
+  author    = {Yosinski, Jason and Clune, Jeff and Bengio, Yoshua and Lipson, Hod},
+  title     = {How transferable are features in deep neural networks?},
+  booktitle = {Proc. Adv. Neural Inf. Process. Syst. (NIPS)},
+  volume    = {27},
+  year      = {2014}
+}
+
+@inproceedings{cui2019classbalanced,
+  author    = {Cui, Yin and Jia, Menglin and Lin, Tsung-Yi and Song, Yang and Belongie, Serge},
+  title     = {Class-Balanced Loss Based on Effective Number of Samples},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)},
+  pages     = {9260--9269},
+  year      = {2019},
+  doi       = {10.1109/CVPR.2019.00949}
+}
+
+@misc{hinton2015distilling,
+  author       = {Hinton, Geoffrey and Vinyals, Oriol and Dean, Jeff},
+  title        = {Distilling the Knowledge in a Neural Network},
+  howpublished = {arXiv:1503.02531},
+  year         = {2015}
+}
+
+% ==================== Parameter-efficient fine-tuning (LoRA) ====================
+@inproceedings{hu2022lora,
+  author    = {Hu, Edward J. and Shen, Yelong and Wallis, Phillip and Allen-Zhu, Zeyuan and Li, Yuanzhi and Wang, Shean and Wang, Lu and Chen, Weizhu},
+  title     = {{LoRA}: Low-Rank Adaptation of Large Language Models},
+  booktitle = {Proc. Int. Conf. Learn. Represent. (ICLR)},
+  year      = {2022}
+}
+
+@inproceedings{zanella2024cliplora,
+  author    = {Zanella, Maxime and Ben Ayed, Ismail},
+  title     = {Low-Rank Few-Shot Adaptation of Vision-Language Models},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. Workshops (CVPRW)},
+  pages     = {1593--1603},
+  year      = {2024},
+  doi       = {10.1109/CVPRW63382.2024.00166}
+}
+
+% ================================ Quantization ================================
+@inproceedings{jacob2018quantization,
+  author    = {Jacob, Benoit and Kligys, Skirmantas and Chen, Bo and Zhu, Menglong and Tang, Matthew and Howard, Andrew and Adam, Hartwig and Kalenichenko, Dmitry},
+  title     = {Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference},
+  booktitle = {Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)},
+  pages     = {2704--2713},
+  year      = {2018},
+  doi       = {10.1109/CVPR.2018.00286}
+}
+
+@misc{nagel2021whitepaper,
+  author       = {Nagel, Markus and Fournarakis, Marios and Amjad, Rana Ali and Bondarenko, Yelysei and van Baalen, Mart and Blankevoort, Tijmen},
+  title        = {A White Paper on Neural Network Quantization},
+  howpublished = {arXiv:2106.08295},
+  year         = {2021}
+}
+
+@misc{krishnamoorthi2018quantizing,
+  author       = {Krishnamoorthi, Raghuraman},
+  title        = {Quantizing deep convolutional networks for efficient inference: A whitepaper},
+  howpublished = {arXiv:1806.08342},
+  year         = {2018}
+}
+
+% ===================== Calibration, abstention, cost-sensitive =====================
+@inproceedings{guo2017calibration,
+  author    = {Guo, Chuan and Pleiss, Geoff and Sun, Yu and Weinberger, Kilian Q.},
+  title     = {On Calibration of Modern Neural Networks},
+  booktitle = {Proc. 34th Int. Conf. Mach. Learn. (ICML)},
+  volume    = {70},
+  pages     = {1321--1330},
+  year      = {2017}
+}
+
+@article{angelopoulos2023conformal,
+  author  = {Angelopoulos, Anastasios N. and Bates, Stephen},
+  title   = {Conformal Prediction: A Gentle Introduction},
+  journal = {Found. Trends Mach. Learn.},
+  volume  = {16},
+  number  = {4},
+  pages   = {494--591},
+  year    = {2023},
+  doi     = {10.1561/2200000101}
+}
+
+@inproceedings{geifman2017selective,
+  author    = {Geifman, Yonatan and El-Yaniv, Ran},
+  title     = {Selective Classification for Deep Neural Networks},
+  booktitle = {Proc. Adv. Neural Inf. Process. Syst. (NIPS)},
+  volume    = {30},
+  year      = {2017}
+}
+
+@inproceedings{elkan2001costsensitive,
+  author    = {Elkan, Charles},
+  title     = {The Foundations of Cost-Sensitive Learning},
+  booktitle = {Proc. 17th Int. Joint Conf. Artif. Intell. (IJCAI)},
+  volume    = {2},
+  pages     = {973--978},
+  year      = {2001}
+}
+
+% ============================ Software & platforms ============================
+@inproceedings{paszke2019pytorch,
+  author    = {Paszke, Adam and Gross, Sam and Massa, Francisco and Lerer, Adam and Bradbury, James and Chanan, Gregory and others},
+  title     = {{PyTorch}: An Imperative Style, High-Performance Deep Learning Library},
+  booktitle = {Proc. Adv. Neural Inf. Process. Syst. (NeurIPS)},
+  volume    = {32},
+  year      = {2019}
+}
+
+@misc{wightman2019timm,
+  author       = {Wightman, Ross},
+  title        = {{PyTorch} Image Models},
+  howpublished = {GitHub repository},
+  year         = {2019},
+  doi          = {10.5281/zenodo.4414861},
+  url          = {https://github.com/huggingface/pytorch-image-models}
+}
+
+@misc{mangrulkar2022peft,
+  author       = {Mangrulkar, Sourab and Gugger, Sylvain and Debut, Lysandre and Belkada, Younes and Paul, Sayak and Bossan, Benjamin and Tietz, Marian},
+  title        = {{PEFT}: State-of-the-art Parameter-Efficient Fine-Tuning methods},
+  howpublished = {GitHub repository},
+  year         = {2022},
+  url          = {https://github.com/huggingface/peft}
+}
+
+@misc{litert_npu,
+  author       = {{Google}},
+  title        = {{NPU} acceleration with {LiteRT}},
+  url          = {https://developers.google.com/edge/litert/next/npu},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{litert_torch,
+  author       = {{Google AI Edge}},
+  title        = {{LiteRT} {T}orch (formerly {AI} {E}dge {T}orch)},
+  howpublished = {GitHub repository},
+  url          = {https://github.com/google-ai-edge/litert-torch},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{android_nnapi,
+  author       = {{Android Developers}},
+  title        = {Neural Networks {API}},
+  howpublished = {Android NDK guide},
+  url          = {https://developer.android.com/ndk/guides/neuralnetworks},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+@misc{rocm_sysreq,
+  author       = {{AMD}},
+  title        = {{ROCm} system requirements ({L}inux)},
+  url          = {https://rocm.docs.amd.com/projects/install-on-linux/en/latest/reference/system-requirements.html},
+  note         = {Accessed: Oct. 18, 2026}
+}
+
+% Figure source. Photo (c) 2015 Henry Holly; all rights reserved -- used with
+% credit for an unofficial course proposal only. Do not redistribute.
+@misc{holly2026carrot,
+  author       = {Holly, Henry},
+  title        = {Wild Carrot vs Poison Hemlock -- A Deep Dive},
+  howpublished = {The Northwest Forager (blog)},
+  month        = jan,
+  year         = {2026},
+  url          = {https://thenorthwestforager.com/2026/01/02/wild-carrot-vs-poison-hemlock/},
+  note         = {Accessed: Oct. 18, 2026}
+}

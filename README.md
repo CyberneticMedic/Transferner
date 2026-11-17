@@ -15,11 +15,16 @@ DECISIONS.md    running decision log
 ```
 
 ## Setup (training box)
+Uses [uv](https://docs.astral.sh/uv/). Known-good: Python 3.12, torch 2.9.1+rocm6.4.
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm<your ROCm version>
-pip install -e '.[lora,boxes]'
-export TRANSFERNER_DATA=/path/to/big/disk/transferner
-make data        # see Makefile for step order
+uv venv --python 3.12 .venv && source .venv/bin/activate
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+uv pip install -e '.[lora,boxes]'
+export TRANSFERNER_DATA=/path/to/big/disk/transferner   # ~300 GB for the full image set
+make data        # see Makefile for step order; every step is resumable
+make bioclip     # text/image embeddings -> linear probe -> temperature
 ```
-Export uses a separate CPU-torch venv: `pip install -e '.[export]'`.
+No accounts are needed: GBIF search facets and Hugging Face downloads are public.
+GBIF credentials (`GBIF_USER`, `GBIF_PWD`, `GBIF_EMAIL`) are only needed to mint a
+citable download DOI for the paper.
+Export uses a separate CPU-torch venv: `uv pip install -e '.[export]'`.

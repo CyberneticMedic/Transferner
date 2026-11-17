@@ -1,7 +1,8 @@
 # Pipeline order. Run on the training box with TRANSFERNER_DATA set.
 PY := python -m transferner
 
-data: resolve species tol gbif download dedup splits boxes
+data: resolve species tol gbif download dedup splits
+# boxes (OWLv2 pseudo-labels) runs separately once the detector work starts: make boxes
 resolve:  ; $(PY).data.resolve_sources
 species:  ; $(PY).data.gbif_species_list && $(PY).data.build_species_list
 tol:      ; $(PY).data.tol_select

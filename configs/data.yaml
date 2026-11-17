@@ -18,6 +18,22 @@ sources:
     catalog: dataset/catalog.parquet       # 16.8 GB, queried with DuckDB, never loaded into pandas
     shard_res: 224                         # ToL shards are pre-resized 224x224
 
+curation:                    # D-021
+  # institutional_specimen: herbaria / botanic gardens / museums (basisOfRecord specimen)
+  # eol_curated:            Encyclopedia of Life content partners
+  # community_verified:     iNaturalist research grade (>= 2/3 agreement), Pl@ntNet, observation.org
+  # other_observation:      other GBIF human observations (validation policy varies by publisher)
+  allowed_tiers: [institutional_specimen, eol_curated, community_verified]
+  drop_licenses: [all-rights-reserved, other]
+  max_specimen_share: 0.30   # of each species' quota; specimens never train the detector (D-020)
+  oversample: 1.25           # select cap x this, so the cap still holds after dedup / dead links
+
+regional:                    # step 04: recent regional photos (post-ToL-snapshot) = test pool
+  datasets: [plantnet, inaturalist]
+  min_event_date: 2024-06-01 # one month after ToL's GBIF snapshot (2024-05-01)
+  per_species: 120           # observations fetched per species
+  test_per_species: 50       # observations reserved for test; the rest join train/val
+
 images:
   store_max_side: 640        # originals are resized on ingest; keeps detector/MNv4 headroom above 224
   jpeg_quality: 92
@@ -45,9 +61,9 @@ splits:
 leakage:
   exclude_if_in_tol_catalog: true     # match GBIF gbifID <-> ToL source_id
   phash_hamming_max: 6
-  # BioCLIP 2.5 trained on +19M images not in the public catalog, so also require
-  # test records newer than this date (set once the training-data cutoff is confirmed).
-  test_min_event_date: null
+  # BioCLIP 2.5 trained on ToL-200M (GBIF snapshot 2024-05-01, doi:10.15468/dl.bfv433) plus
+  # ~19M images not fully in the public catalog, so also require test records newer than this.
+  test_min_event_date: 2024-06-01
 
 priors:
   record_state_month_counts: true      # for later GPS/season priors (D-014)

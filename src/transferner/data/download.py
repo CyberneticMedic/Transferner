@@ -22,11 +22,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 import math
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -52,12 +54,72 @@ MIN_FREE_GB = 150
 DEAD_HOST_AFTER = 60          # attempts with zero successes -> skip host for the rest of this run
 CHECKPOINT_EVERY = 2000
 MIN_AVAIL_GB = 16             # pause new fetches while system MemAvailable is below this (shared box)
+# Bandwidth cap shared by every running download process (all runs), re-read every 2 s so it can be
+# changed live: echo '{"total_MBps": 95}' > $TRANSFERNER_DATA/cache/download/bandwidth.json
+BANDWIDTH_FILE = "cache/download/bandwidth.json"
+DEFAULT_TOTAL_MBPS = 95.0     # payload MB/s; ~100 MB/s on the wire = 80% of the 1 GbE uplink
 
 COLS = ["uuid", "class_idx", "source", "observation_id", "url", "license", "rights_holder",
         "publisher", "curation_tier", "is_specimen"]
 OPT = ["data_source", "source_id", "basis", "img_type", "pick_rank", "gbif_id", "dataset_key",
        "event_date", "state", "organ", "occurrence_ref", "license_link"]
 QUEUE_COLS = ["uuid", "class_idx", "source", "url", "pick_rank"]
+
+
+class RateLimiter:
+    """Thread-safe virtual-clock byte-rate limiter. rate=None means unlimited."""
+
+    def __init__(self):
+        self.rate: float | None = None
+        self.t = time.monotonic()
+        self.lock = threading.Lock()
+
+    def consume(self, n: int) -> None:
+        rate = self.rate
+        if not rate:
+            return
+        with self.lock:
+            now = time.monotonic()
+            self.t = max(self.t, now - 0.25) + n / rate          # at most 0.25 s of burst
+            wait = self.t - now
+        if wait > 0:
+            time.sleep(wait)
+
+
+class BandwidthShare(threading.Thread):
+    """Heartbeat file per process; each process takes total_cap / n_active_processes."""
+
+    def __init__(self, root: Path, limiter: RateLimiter):
+        super().__init__(daemon=True)
+        self.dir = root / "cache/download/active"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.me = self.dir / str(os.getpid())
+        self.cfg = root / BANDWIDTH_FILE
+        self.limiter = limiter
+        self.halt = threading.Event()
+        self.total = DEFAULT_TOTAL_MBPS
+
+    def update(self) -> None:
+        self.me.touch()
+        now, n = time.time(), 0
+        for p in self.dir.iterdir():
+            try:
+                n += now - p.stat().st_mtime < 10
+            except FileNotFoundError:
+                pass
+        try:
+            self.total = float(json.loads(self.cfg.read_text())["total_MBps"])
+        except (OSError, ValueError, KeyError):
+            self.total = DEFAULT_TOTAL_MBPS
+        self.limiter.rate = self.total * 1e6 / max(n, 1) if self.total > 0 else None
+
+    def run(self) -> None:
+        while not self.halt.wait(2):
+            self.update()
+
+    def close(self) -> None:
+        self.halt.set()
+        self.me.unlink(missing_ok=True)
 
 
 def fetch_url(url: str) -> str:
@@ -97,8 +159,10 @@ def load_queue(root: Path, full: bool = True) -> pd.DataFrame:
 
 
 class Fetcher:
-    def __init__(self, root: Path, max_side: int, quality: int):
+    def __init__(self, root: Path, max_side: int, quality: int, limiter: RateLimiter | None = None):
         self.root, self.max_side, self.quality = root, max_side, quality
+        self.limiter = limiter or RateLimiter()
+        self.bytes = 0
 
     def __call__(self, uuid: str, url: str) -> dict:
         out = {"uuid": uuid, "status": "ok", "error": None, "path": rel_path(uuid)}
@@ -111,11 +175,17 @@ class Fetcher:
                 r = session("image").get(url, timeout=(10, 60), stream=True)
             try:
                 r.raise_for_status()
-                data = r.raw.read(MAX_BYTES + 1, decode_content=True)
+                chunks, size = [], 0
+                for chunk in r.raw.stream(65536, decode_content=True):
+                    self.limiter.consume(len(chunk))
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise ValueError("too large")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
             finally:
                 r.close()
-            if len(data) > MAX_BYTES:
-                raise ValueError("too large")
+            self.bytes += len(data)
             im = Image.open(io.BytesIO(data))
             out["orig_w"], out["orig_h"] = im.size
             if min(im.size) < 64:
@@ -144,7 +214,11 @@ def merge_parts(root: Path, columns: list[str] | None = None) -> pd.DataFrame:
 
 def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label: str) -> None:
     cfg = load("data")["images"]
-    fetch = Fetcher(root, cfg["store_max_side"], cfg["jpeg_quality"])
+    limiter = RateLimiter()
+    share = BandwidthShare(root, limiter)
+    share.update()
+    share.start()
+    fetch = Fetcher(root, cfg["store_max_side"], cfg["jpeg_quality"], limiter)
     hosts: dict[str, deque] = {}
     for uuid, url in zip(todo.uuid, todo.url):                    # keeps priority order within each host
         hosts.setdefault(urlparse(fetch_url(url)).netloc, deque()).append((uuid, url))
@@ -200,7 +274,7 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
             if not q:
                 del hosts[h]
 
-    last_scan, mem_good, last_mem = 0.0, True, 0.0
+    last_scan, mem_good, last_mem, t_start = 0.0, True, 0.0, time.monotonic()
     with ThreadPoolExecutor(workers) as ex:
         fill(ex)
         while pending or (hosts and not stop):
@@ -226,12 +300,16 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
             if len(buf) >= CHECKPOINT_EVERY:
                 pd.DataFrame(buf).to_parquet(part(n_part))
                 n_part, buf = n_part + 1, []
-                bar.set_postfix(ok=f"{n_ok / max(bar.n, 1):.0%}", hosts=len(hosts))
+                el = max(time.monotonic() - t_start, 1e-6)
+                bar.set_postfix(ok=f"{n_ok / max(bar.n, 1):.0%}", hosts=len(hosts),
+                                MBps=f"{fetch.bytes / el / 1e6:.1f}",
+                                cap=f"{(limiter.rate or 0) / 1e6:.1f}")
                 if not stop and shutil.disk_usage(root).free < MIN_FREE_GB * 2**30:
                     print(f"\n[{label}] free space below {MIN_FREE_GB} GB; draining and stopping")
                     stop = True
     if buf:
         pd.DataFrame(buf).to_parquet(part(n_part))
+    share.close()
     bar.close()
 
 
@@ -268,10 +346,15 @@ def main() -> None:
     ap.add_argument("--retry-failed", action="store_true")
     ap.add_argument("--merge-only", action="store_true")
     ap.add_argument("--only-source", choices=["tol", "gbif_regional"])
+    ap.add_argument("--max-mbps", type=float, default=None,
+                    help="total payload MB/s across ALL download processes (0 = unlimited); "
+                         f"persists in {BANDWIDTH_FILE}, default {DEFAULT_TOTAL_MBPS}")
     args = ap.parse_args()
 
     root = data_root()
     (root / "cache/download").mkdir(parents=True, exist_ok=True)
+    if args.max_mbps is not None:
+        (root / BANDWIDTH_FILE).write_text(json.dumps({"total_MBps": args.max_mbps}))
     if args.merge_only:
         write_manifest(root)
         return

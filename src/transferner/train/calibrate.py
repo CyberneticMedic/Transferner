@@ -26,11 +26,17 @@ def ece(logits: torch.Tensor, y: torch.Tensor, bins: int = 15) -> float:
 
 
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--emb", default="artifacts/img_emb")
+    ap.add_argument("--probe", default="artifacts/probe.pt")
+    ap.add_argument("--out", default="artifacts/temperature.txt")
+    args = ap.parse_args()
     root = data_root()
-    pr = torch.load(root / "artifacts/probe.pt")
+    pr = torch.load(root / args.probe)
     W, b, s = pr["W"].cuda(), pr["b"].cuda(), pr["scale"]
-    e = torch.from_numpy(np.load(root / "artifacts/img_emb/val.npy")).cuda().float()
-    y = torch.from_numpy(pd.read_parquet(root / "artifacts/img_emb/val.parquet").class_idx.to_numpy()).cuda()
+    e = torch.from_numpy(np.load(root / args.emb / "val.npy")).cuda().float()
+    y = torch.from_numpy(pd.read_parquet(root / args.emb / "val.parquet").class_idx.to_numpy()).cuda()
     with torch.no_grad():
         logits = s * e @ W.T + b
     logT = torch.zeros(1, device="cuda", requires_grad=True)
@@ -46,7 +52,7 @@ def main() -> None:
     T = logT.exp().item()
     print(f"T = {T:.4f} | NLL {F.cross_entropy(logits, y):.4f} -> {F.cross_entropy(logits / T, y):.4f} "
           f"| ECE {ece(logits, y):.4f} -> {ece(logits / T, y):.4f}")
-    (root / "artifacts/temperature.txt").write_text(f"{T:.6f}\n")
+    (root / args.out).write_text(f"{T:.6f}\n")
 
 
 if __name__ == "__main__":

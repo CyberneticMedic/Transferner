@@ -17,9 +17,9 @@ from ..utils.config import load, data_root
 from ..utils.csvlog import RunLog
 
 
-def load_split(root, s):
-    e = torch.from_numpy(np.load(root / f"artifacts/img_emb/{s}.npy"))
-    y = torch.from_numpy(pd.read_parquet(root / f"artifacts/img_emb/{s}.parquet").class_idx.to_numpy())
+def load_split(emb, s):
+    e = torch.from_numpy(np.load(emb / f"{s}.npy"))
+    y = torch.from_numpy(pd.read_parquet(emb / f"{s}.parquet").class_idx.to_numpy())
     return e, y
 
 
@@ -39,18 +39,24 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=8192)
     ap.add_argument("--wd", type=float, default=0.0)
     ap.add_argument("--anchor", type=float, default=1e-2, help="L2 pull of W back to the text init")
+    ap.add_argument("--emb", default="artifacts/img_emb", help="embedding dir, relative to TRANSFERNER_DATA")
+    ap.add_argument("--epochs", type=int, default=None, help="override configs/bioclip.yaml")
+    ap.add_argument("--out", default="artifacts/probe.pt")
     args = ap.parse_args()
 
-    cfg = load("bioclip")["heads"]["linear_probe"]
+    cfg = dict(load("bioclip")["heads"]["linear_probe"])
+    if args.epochs:
+        cfg["epochs"] = args.epochs
     root = data_root()
+    emb = root / args.emb
     sp = pd.read_parquet(root / "manifests/species.parquet").sort_values("class_idx")
     T = torch.from_numpy(np.load(root / "artifacts/text_emb.npy")).cuda()
     scale = float((root / "artifacts/logit_scale.txt").read_text())
     frozen = torch.from_numpy(sp.zero_shot_only.to_numpy()).cuda()
 
-    tr_e, tr_y = load_split(root, "train")
-    va_e, va_y = load_split(root, "val")
-    te_e, te_y = load_split(root, "test")
+    tr_e, tr_y = load_split(emb, "train")
+    va_e, va_y = load_split(emb, "val")
+    te_e, te_y = load_split(emb, "test")
     log = RunLog("linear_probe")
 
     zs = lambda e: scale * e @ T.T                                           # noqa: E731
@@ -92,7 +98,7 @@ def main() -> None:
     res["probe_val"], res["probe_test"] = topk(probe, va_e, va_y), topk(probe, te_e, te_y)
     print("probe", res)
     torch.save({"W": F.normalize(W.detach(), dim=-1).cpu(), "b": b.detach().cpu(), "scale": scale},
-               root / "artifacts/probe.pt")
+               root / args.out)
     log.summary("bioclip_probe", n_classes=len(T), n_train=len(tr_e),
                 **{f"{k}_{m}": v for k, d in res.items() for m, v in d.items()})
     log.close()

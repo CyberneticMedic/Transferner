@@ -1,0 +1,2 @@
+run_id,n_classes,n_train,zs_val_top1,zs_val_top5,zs_test_top1,zs_test_top5,probe_val_top1,probe_val_top5,probe_test_top1,probe_test_top5
+20261117-003103_linear_probe,4411,4000,0.8045,0.9555,0.0,0.0,0.814,0.956,0.0,0.0

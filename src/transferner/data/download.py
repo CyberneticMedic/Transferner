@@ -44,13 +44,14 @@ from ..utils.http import session
 
 Image.MAX_IMAGE_PIXELS = 200_000_000
 # Total concurrent connections per host, summed over all processes.
-HOST_LIMITS = {"inaturalist-open-data.s3.amazonaws.com": 192,   # AWS Open Data bucket, built for bulk use
+HOST_LIMITS = {"inaturalist-open-data.s3.amazonaws.com": 256,   # AWS Open Data bucket, built for bulk use
                "static.inaturalist.org": 8}
 DEFAULT_HOST_LIMIT = 6
 MAX_BYTES = 40 * 2**20
 MIN_FREE_GB = 150
 DEAD_HOST_AFTER = 60          # attempts with zero successes -> skip host for the rest of this run
 CHECKPOINT_EVERY = 2000
+MIN_AVAIL_GB = 16             # pause new fetches while system MemAvailable is below this (shared box)
 
 COLS = ["uuid", "class_idx", "source", "observation_id", "url", "license", "rights_holder",
         "publisher", "curation_tier", "is_specimen"]
@@ -116,10 +117,12 @@ class Fetcher:
             if len(data) > MAX_BYTES:
                 raise ValueError("too large")
             im = Image.open(io.BytesIO(data))
-            im = ImageOps.exif_transpose(im).convert("RGB")
             out["orig_w"], out["orig_h"] = im.size
             if min(im.size) < 64:
                 raise ValueError(f"too small {im.size}")
+            if im.format == "JPEG":     # decode at 1/2..1/8 scale, never below max_side: far less RAM and CPU
+                im.draft("RGB", (self.max_side, self.max_side))
+            im = ImageOps.exif_transpose(im).convert("RGB")
             im.thumbnail((self.max_side, self.max_side), Image.Resampling.LANCZOS)
             dst.parent.mkdir(parents=True, exist_ok=True)
             tmp = dst.with_suffix(f".{os.getpid()}.tmp")
@@ -154,7 +157,15 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
     bar = tqdm(total=len(todo), desc=label, smoothing=0.02, mininterval=0.5 if sys.stderr.isatty() else 60)
     pending: set = set()
 
+    def mem_ok() -> bool:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) > MIN_AVAIL_GB * 2**20
+        return True
+
     def fill(ex):
+        if not mem_ok():
+            return
         progressed = True
         while progressed and len(pending) < workers and hosts:
             progressed = False
@@ -189,10 +200,10 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
             if not q:
                 del hosts[h]
 
-    last_scan = 0.0
+    last_scan, mem_good, last_mem = 0.0, True, 0.0
     with ThreadPoolExecutor(workers) as ex:
         fill(ex)
-        while pending:
+        while pending or (hosts and not stop):
             fin, _ = wait(pending, return_when=FIRST_COMPLETED)
             for f in fin:
                 pending.discard(f)
@@ -202,9 +213,13 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
                 n_ok += res["status"] == "ok"
                 buf.append(res)
                 bar.update()
-                if not stop:
+                if not stop and mem_good:
                     refill_host(ex, f.host)                # cheap: same host usually has more work
             now = time.monotonic()
+            if now - last_mem > 2:
+                mem_good, last_mem = mem_ok(), now
+            if not pending and not mem_good:
+                time.sleep(2)                              # everything drained while memory was short
             if not stop and (now - last_scan > 0.5 or not pending):  # full scan picks up other hosts
                 fill(ex)
                 last_scan = now
@@ -231,6 +246,19 @@ def write_manifest(root: Path) -> None:
           f"(queue {len(q):,}) | failures: {fails}")
 
 
+def pending_todo(root: Path, args) -> pd.DataFrame:
+    """Queue minus what is already done (or done-ok, with --retry-failed), in download order."""
+    q = load_queue(root, full=False)
+    done = merge_parts(root, columns=["uuid", "status"])
+    skip = set(done.uuid) if not args.retry_failed else set(done.loc[done.status == "ok", "uuid"])
+    todo = q[~q.uuid.isin(skip)]
+    if args.only_source:
+        todo = todo[todo.source == args.only_source]
+    if args.limit:
+        todo = todo.head(args.limit)
+    return todo[["uuid", "url"]].reset_index(drop=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--procs", type=int, default=1, help="worker processes (each owns 1/N of the queue)")
@@ -250,7 +278,7 @@ def main() -> None:
 
     if args.procs > 1 and args.shard is None:                        # parent: fan out, wait, merge
         base = [sys.executable, "-m", "transferner.data.download", "--workers", str(args.workers)]
-        for flag, val in (("--only-source", args.only_source), ("--limit", args.limit or None)):
+        for flag, val in (("--only-source", args.only_source),):
             if val:
                 base += [flag, str(val)]
         if args.retry_failed:
@@ -258,10 +286,17 @@ def main() -> None:
         logs = root / "logs"
         logs.mkdir(exist_ok=True)
         tag = args.only_source or "all"
+        todo = pending_todo(root, args)
+        todo["shard"] = todo.uuid.map(lambda u: shard_of(u, args.procs))
+        for i in range(args.procs):
+            todo.loc[todo.shard == i, ["uuid", "url"]].to_parquet(root / f"cache/download/todo-{tag}-{i}.parquet")
+        print(f"to fetch {len(todo):,} across {args.procs} shards", flush=True)
+        del todo
+        env = {**os.environ, "MALLOC_ARENA_MAX": "2"}
         procs = []
         for i in range(args.procs):
             log = open(logs / f"download_{tag}_{i}of{args.procs}.log", "a")
-            procs.append(subprocess.Popen(base + ["--shard", f"{i}/{args.procs}"], stdout=log, stderr=log))
+            procs.append(subprocess.Popen(base + ["--shard", f"{i}/{args.procs}"], stdout=log, stderr=log, env=env))
         print(f"started {args.procs} shards: pids {[p.pid for p in procs]}; logs in {logs}", flush=True)
         codes = [p.wait() for p in procs]
         print(f"shards exited {codes}", flush=True)
@@ -269,20 +304,11 @@ def main() -> None:
         return
 
     i, n = map(int, args.shard.split("/")) if args.shard else (0, 1)
-    q = load_queue(root, full=False)
-    done = merge_parts(root, columns=["uuid", "status"])
-    skip = set(done.uuid) if not args.retry_failed else set(done.loc[done.status == "ok", "uuid"])
-    del done
-    todo = q[~q.uuid.isin(skip)]
-    if args.only_source:
-        todo = todo[todo.source == args.only_source]
-    if n > 1:
-        todo = todo[todo.uuid.map(lambda u: shard_of(u, n) == i)]
-    if args.limit:
-        todo = todo.head(args.limit // n if n > 1 else args.limit)
-    todo = todo[["uuid", "url"]].reset_index(drop=True)
-    del q
-    print(f"shard {i}/{n}: to fetch {len(todo):,} (already done {len(skip):,})", flush=True)
+    if n > 1:                                        # parent already wrote this shard's work list
+        todo = pd.read_parquet(root / f"cache/download/todo-{args.only_source or 'all'}-{i}.parquet")
+    else:
+        todo = pending_todo(root, args)[["uuid", "url"]].reset_index(drop=True)
+    print(f"shard {i}/{n}: to fetch {len(todo):,}", flush=True)
     if len(todo):
         run_worker(root, todo, args.workers, n, f"dl{i}/{n}")
     if n == 1:

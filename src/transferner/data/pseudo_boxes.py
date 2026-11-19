@@ -73,6 +73,7 @@ def boxes_for(logits, pred_boxes, sizes, min_score: float, iou: float, max_boxes
     """logits (B, P, Q), pred_boxes (B, P, 4) cxcywh in [0, 1] of the padded square, sizes (B, 2) = (w, h).
     Yields per image: xyxy fractions of the original image (n, 4), scores (n,), prompt index (n,)."""
     probs = logits.float().sigmoid()
+    sizes = sizes.to(logits.device)                         # DataLoader sizes are on the CPU
     score, label = probs.max(-1)                             # best prompt per predicted box
     cx, cy, bw, bh = pred_boxes.float().unbind(-1)
     xyxy = torch.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], -1)

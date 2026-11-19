@@ -11,6 +11,7 @@ dependencies = [
   "pyyaml", "tqdm", "requests",
   "pillow", "imagehash",
   "scikit-learn", "scipy",
+  "matplotlib",                      # results/figures
 ]
 
 [project.optional-dependencies]

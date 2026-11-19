@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ..utils.config import data_root
+from ..utils.config import REPO, data_root, load
 from ..utils.csvlog import RunLog
 from . import metrics as M
 
@@ -32,6 +32,21 @@ def predict(logits_fn, e: torch.Tensor, T: float = 1.0, k: int = 5):
     return torch.cat(tops).numpy(), torch.cat(confs).numpy()
 
 
+def trait_flags(sp: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Per-class booleans from data/traits/species_traits.csv (indexed by class_idx)."""
+    tr = pd.read_csv(REPO / load("species")["traits"])
+    n = int(sp.class_idx.max()) + 1
+    idx = dict(zip(sp.gbif_taxon_key.astype(int), sp.class_idx))
+    out = {}
+    for col in ("contact_toxic", "ingestion_toxic"):
+        keys = tr.loc[tr[col] == 1, "gbif_taxon_key"].astype(int)
+        f = np.zeros(n, bool)
+        f[[idx[k] for k in keys if k in idx]] = True
+        out[col] = f
+    out["toxic"] = out["contact_toxic"] | out["ingestion_toxic"]
+    return out
+
+
 def group_masks(sp: pd.DataFrame, y: np.ndarray) -> dict[str, np.ndarray]:
     s = sp.set_index("class_idx").loc[y]
     g = {"all": np.ones(len(y), bool)}
@@ -40,8 +55,10 @@ def group_masks(sp: pd.DataFrame, y: np.ndarray) -> dict[str, np.ndarray]:
     for lo, hi, name in TRAIN_BINS:
         g[name] = ((s.n_train >= lo) & (s.n_train < hi)).to_numpy()
     for col, name in [("zero_shot_only", "zero_shot_only"), ("is_lookalike", "lookalike"),
-                      ("is_toxic", "toxic"), ("must_include", "must_include")]:
+                      ("must_include", "must_include")]:
         g[name] = s[col].to_numpy().astype(bool)
+    for name, f in trait_flags(sp).items():          # from the trait table, not the stale manifest flag
+        g[name] = f[y]
     return g
 
 
@@ -87,13 +104,20 @@ def main() -> None:
               args.name: predict(lambda x: pr["scale"] * x @ W.T + b, e, T)}
 
     masks = group_masks(sp, y)
+    tox = trait_flags(sp)
     log = RunLog("evaluate")
     rows = []
     for name, (top, conf) in models.items():
+        d = {}
+        for kind in ("contact_toxic", "ingestion_toxic"):
+            r_ = M.dmr(top[:, 0], y, tox[kind])
+            d[f"dmr_{kind.split('_')[0]}"], d[f"dmr_{kind.split('_')[0]}_n"] = r_["dmr"], r_["n"]
+        print(f"{name}: DMR contact {d['dmr_contact']:.4f} (n={d['dmr_contact_n']:,}), "
+              f"ingestion {d['dmr_ingestion']:.4f} (n={d['dmr_ingestion_n']:,})")
         for g, m in masks.items():
             if m.any():
                 r = {"model": name, "split": args.split, "group": g,
-                     **score(top, conf, y, obs, genus, family, m)}
+                     **score(top, conf, y, obs, genus, family, m), **(d if g == "all" else {})}
                 rows.append(r)
                 log.summary("eval", **r, probe=args.probe if name != "zero_shot" else "",
                             temperature=T if name != "zero_shot" else 1.0)

@@ -1,7 +1,5 @@
 """top-k, macro-F1, ECE, look-alike confusion, per-level (species/genus/family). Bootstrap CIs + McNemar.
-
-DMR (dangerous misidentification rate, contact / ingestion) needs the per-(species, part)
-trait table (D-004/D-005), which is not built yet."""
+DMR (dangerous miss rate, proposal §Evaluation) over the toxic sets of the trait table (D-004/D-005)."""
 from __future__ import annotations
 
 import numpy as np
@@ -66,3 +64,17 @@ def lookalike_confusion(pred: np.ndarray, y: np.ndarray, groups: dict[int, set[s
     return {"n": int(m.sum()), "err": float(wrong.sum() / max(m.sum(), 1)),
             "err_within_group": float(same / max(m.sum(), 1)),
             "share_of_errors_within_group": float(same / max(wrong.sum(), 1))}
+
+
+def dmr(pred: np.ndarray, y: np.ndarray, toxic: np.ndarray, conf: np.ndarray | None = None,
+        tau: float | None = None) -> dict:
+    """Dangerous miss rate: of the images whose TRUE species is toxic (toxic[class] is True),
+    the share predicted as a non-toxic species without abstaining (abstain = conf < tau).
+    Predicting another toxic species is not a miss (the warning still fires). Species with no
+    trait rows count as non-toxic predictions, exactly as the app would treat them."""
+    m = toxic[y]
+    if not m.any():
+        return {"n": 0, "dmr": float("nan"), "coverage": float("nan")}
+    sure = np.ones(len(y), bool) if tau is None else conf >= tau
+    miss = ~toxic[pred] & sure
+    return {"n": int(m.sum()), "dmr": float(miss[m].mean()), "coverage": float(sure[m].mean())}

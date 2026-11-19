@@ -77,7 +77,8 @@ def main() -> None:
                     help="keep zero_shot_only species' text rows frozen")
     ap.add_argument("--extra-train", nargs="+", default=[],
                     help="more training embeddings, <dir>/<split> relative to TRANSFERNER_DATA")
-    ap.add_argument("--w-field", type=float, default=1.0, help="loss weight of field photos (regional, train_ext)")
+    ap.add_argument("--w-field", type=float, default=None,
+                    help="loss weight of field photos (regional, train_ext); default: config w_field")
     ap.add_argument("--w-bryo", type=float, default=1.0, help="loss weight of bryophyte species")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--emb", default="artifacts/img_emb", help="embedding dir, relative to TRANSFERNER_DATA")
@@ -87,7 +88,7 @@ def main() -> None:
 
     cfg = dict(load("bioclip")["heads"]["linear_probe"])
     for k in ("epochs", "lr", "anchor", "label_smoothing", "logit_adjust", "freeze_zero_shot",
-              "train_ext", "shrink_k", "shrink_below"):
+              "train_ext", "shrink_k", "shrink_below", "w_field"):
         if getattr(args, k) is not None:
             cfg[k] = getattr(args, k)
     cfg.setdefault("anchor", 1e-2)
@@ -97,6 +98,7 @@ def main() -> None:
     cfg.setdefault("train_ext", False)
     cfg.setdefault("shrink_k", 0.0)
     cfg.setdefault("shrink_below", 100)
+    cfg.setdefault("w_field", 1.0)
     torch.manual_seed(args.seed)
     root = data_root()
     emb = root / args.emb
@@ -117,8 +119,8 @@ def main() -> None:
         tr_e, tr_y, tr_field = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y]), torch.cat([tr_field, ex_f])
         print(f"extra train {x}: {len(ex_y):,} images")
     bryo = torch.tensor(sp.phylum.isin(["Bryophyta", "Marchantiophyta"]).to_numpy())
-    tr_w = torch.where(tr_field, args.w_field, 1.0) * torch.where(bryo[tr_y], args.w_bryo, 1.0)
-    weighted = args.w_field != 1.0 or args.w_bryo != 1.0
+    tr_w = torch.where(tr_field, cfg["w_field"], 1.0) * torch.where(bryo[tr_y], args.w_bryo, 1.0)
+    weighted = cfg["w_field"] != 1.0 or args.w_bryo != 1.0
     has_ext = (emb / "val_ext.npy").exists()
     if has_ext:
         xv_e, xv_y, _ = load_split(emb, "val_ext")
@@ -203,7 +205,7 @@ def main() -> None:
                 label_smoothing=cfg["label_smoothing"], epochs=cfg["epochs"], best_epoch=best_ep,
                 logit_adjust=cfg["logit_adjust"], freeze_zero_shot=cfg["freeze_zero_shot"],
                 select=args.select, train_ext=cfg["train_ext"], shrink_k=cfg["shrink_k"],
-                shrink_below=cfg["shrink_below"], w_field=args.w_field, w_bryo=args.w_bryo,
+                shrink_below=cfg["shrink_below"], w_field=cfg["w_field"], w_bryo=args.w_bryo,
                 extra_train=" ".join(args.extra_train), out=args.out)
     log.close()
 

@@ -62,9 +62,9 @@ Notes on the token-merging grid:
 
 ## Plan
 ### Phase A: efficiency (priority)
-- [ ] **A1 (round 3: 5 of 6 done):**
+- [x] **A1 (done in round 4):**
   - Done: `fp16` 84.95, `w8a16` 84.94, `w8a8dyn` 84.96, `w4a16_g128` 84.37 (−0.58 pt, 315 MB), `w4a16_g32` 84.52 (−0.43 pt, 343 MB).
-  - Queued: `w4a8dyn_g32` (after the A4 screens and `res210`).
+  - `w4a8dyn_g32` (8da4w), val-only: regional val 89.66% (`w4a16_g32` 89.63%), val_ext 48.05% (48.34%). Dynamic INT8 activations add nothing on top of W4, so no test run (D-032).
   - References and weight-only / dynamic quantization:
   - `fp16`
   - `w8a16`
@@ -77,20 +77,20 @@ Notes on the token-merging grid:
   - Queued, val-only: `w8a8p_s0.5_k1` and `w8a8p_s0.5_k4`, which keep `b1.fc1` (or the top 4 layers) in FP16. `b1.fc1` is 3.3× more sensitive than any other layer. This shows how much one fallback layer buys. Run k1 on test only if it recovers ≥ 0.5 pt on val and the GPU has time.
   - The calibration sampler is seeded from commit 9650bac on, so earlier static runs carry about ±0.15 pt of calibration noise.
   - **Round 3: min/max activation ranges remove the loss on val** (`w8a8_s0.5_p100`: regional val 90.10% vs FP16 90.03% and k0 88.75–88.90%; cosine 0.9955 vs 0.944). The real PT2E graph agrees: `MinMaxObserver` gives cosine 0.995 against 0.975 for the default `HistogramObserver` (`export_check.csv`, `--pt2e-only`). **Test: 84.82% (−0.12 pt, rel 0.9985), DMR 5.56% / 4.42%** (D-028: 83.52%, 6.20% / 4.68%). Recorded as **D-031**, which replaces D-028's ranges.
-- [ ] **A3: structural variants.** *(Round 3: ToMe and resolution done; `res210` added and queued, then `base_subset`, `drop2`, `drop4`.)*
+- [x] **A3: structural variants.** *(Done in round 4. Test (Δ, GFLOPs): `res210` 84.15 (−0.80 vs FP16, 293). Against `base_subset` (83.22): `drop2` 80.30 (−2.92, 314) and `drop4` 77.39 (−5.84, 293). Block dropping is dominated; see D-032.)*
   - Test top-1 (Δ vs FP16, GFLOPs): `tome_r2` 84.01 (−0.94, 292), `tome_r4` 82.24 (−2.71, 249), `tome_r6` 78.96 (−5.99, 207), `res196` 83.13 (−1.81, 255, 247 img/s vs 188), `res168` 78.49 (−6.46, 186).
   - Contact DMR rises faster than top-1 falls: `res196` 5.46 → 6.40%, `tome_r2` → 5.72%, `tome_r4` → 7.24%.
   - `tome_r2`, `tome_r4`, `tome_r6`
   - `res196`, `res168`
   - `base_subset` (retrained head on 40 images per species), then `drop2` and `drop4`. A dropped-block variant must be compared with `base_subset`, not with the production head.
-- [ ] **A4: combinations along the Pareto front.** At most about 6 jobs, chosen from A1–A3. Example: the accepted partial W8A8 with the best token-merging r or resolution, or W4A16 with token merging. For a static combination, recompute sensitivity only if the structure changes a lot.
+- [x] **A4: combinations along the Pareto front.** *(Done in round 4: two val-only screens, no test picks. Additive on regional val, but static W8A8 adds a significant val_ext loss on top of a structure: −0.76 pt on `res196`, paired p = 0.004; −0.97 pt on `tome_r2`, p = 0.001. Recorded in D-032.)* At most about 6 jobs, chosen from A1–A3. Example: the accepted partial W8A8 with the best token-merging r or resolution, or W4A16 with token merging. For a static combination, recompute sensitivity only if the structure changes a lot.
   - **GPU time is the constraint (round 2):** the queue runs until about 09:10, and the runner starts nothing after 10:00. Screen combos with `--val-only` (about 5 min each, 27K images), then run test (about 20–36 min) only for the 1–2 picks.
   - **Insert combos ahead of `base_subset`/`drop2`/`drop4`.** Those are the lowest-value jobs (−6%/−12% FLOPs, need a retrained head), so `drop4` is the first job to cut if time runs out.
   - Weight-only and dynamic INT8 are lossless (w8a16 −0.01 pt, w8a8dyn +0.01 pt), so a `w8a16 + tome_rX` combo will land within noise of `tome_rX`. Prefer combos whose interaction is uncertain: static W8A8 + tome/res, and W4 + tome/res.
   - **Round 3: screens done, both additive (round 3 journal); no combo test runs.** Original note: `w8a8_s0.5_p100_res196` and `w8a8_s0.5_p100_tome2`. Compare each with its float structure's val (`res196` 88.25, `tome_r2` 89.23). If the static penalty on top of the structure is ≤ 0.2 pt val, the combo is additive and needs no test run; the report can cite the screen. Run test only for a combo that is a real candidate (see the round 3 journal for the time rule).
-- [ ] **A5: report.**
+- [x] **A5: report.**
   - [x] Add `src/transferner/eval/efficiency_report.py`, producing `results/EFFICIENCY.md` (a table of every variant: top-1/top-5 on test, Δ vs FP16, val, weight MB, GFLOPs) and `results/figures/efficiency_pareto.png` (test top-1 against GFLOPs and against weight MB). Load the `dataviz` skill before writing the chart code. *(Round 1: written and checked on a synthetic table. It runs on the CPU and also reports DMR per variant from the saved embeddings. Rerun it whenever rows land: `python -m transferner.eval.efficiency_report`.)*
-  - [x] Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile. *(Round 3: **D-032**. GPU: W8A16, with W4A16 g32 as the memory fallback. NPU: static W8A8 per D-031. CPU: 8da8w. No structural cut by default. Still to add: `res210`, `drop2`/`drop4` and the 8da4w val number.)*
+  - [x] Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile. *(Round 3: **D-032**. GPU: W8A16, with W4A16 g32 as the memory fallback. NPU: static W8A8 per D-031. CPU: 8da8w. No structural cut by default. Round 4 added `res210`, `drop2`/`drop4`, the 8da4w val number and the static + structure val_ext caveat.)*
 - [x] **A6 (optional, after A5): export feasibility on x86.** *(LiteRT part done in round 2, recorded as D-029. ExecuTorch was not tried: it pins torch 2.15 and would need its own venv.)*
   - Set up `.venv-export` (CPU torch) with ai-edge-torch and/or executorch.
   - Export the FP16 and W8 variants and check outputs against PyTorch on 64 images.
@@ -166,10 +166,11 @@ Notes on the token-merging grid:
 - **Round 1 assessment:** the queue (A1, A2, B, A3) runs until about 09:00, and A4 comes after it, so Phase D's GPU work will not fit before the 10:00 stop tonight. A later round with spare CPU time may write `pseudo_boxes.py` and test it on a few images on the CPU. Both stubs are still `NotImplementedError`. `transformers` 5.23 and `timm` 1.0.31 are already in `.venv`.
 - **Packages:** install missing ones such as `transformers` and `timm` into `.venv` with `uv`.
 - [x] **Round 3: licences checked** (HF API, cached under `raw/hf_cards/`): `google/owlv2-base-patch16-ensemble` and `timm/mobilenetv4_conv_medium.e500_r256_in1k` are both Apache-2.0.
-- [x] **Round 3: `data/pseudo_boxes.py` written and CPU-tested.** OWLv2 over at most `--per-genus` (default 20) non-specimen images per genus from train/val/test. Boxes keep their best prompt, go through class-agnostic NMS at IoU 0.5 and are capped at 10 per image, with a full-frame fallback. OWLv2's padded-square boxes are mapped back to the original image, and the geometry was checked visually on portrait and landscape photos. Output is resumable in 2,048-image parts. Run it on the GPU through the queue, `python -m transferner.data.pseudo_boxes`, once Phase A's GPU work is done. CPU runs at 0.2 img/s. On the GPU, expect tens of img/s; measure it.
+- [x] **Round 3: `data/pseudo_boxes.py` written and CPU-tested.** OWLv2 over at most `--per-genus` (default 20) non-specimen images per genus from train/val/test. Boxes keep their best prompt, go through class-agnostic NMS at IoU 0.5 and are capped at 10 per image, with a full-frame fallback. OWLv2's padded-square boxes are mapped back to the original image, and the geometry was checked visually on portrait and landscape photos. Output is resumable in 2,048-image parts. Run it on the GPU through the queue, `python -m transferner.data.pseudo_boxes`, once Phase A's GPU work is done. CPU runs at 0.2 img/s. **Round 4: the GPU runs at 29–33 img/s** (after a device fix), so the full 27,017-image selection takes about 15 min. `drop_nested()` is the training-time cleanup.
 - **Out of reach here:** the field video test set (D-018) needs the user's walks.
 
 ## Journal
+STATUS: DONE
 (Newest last. Each round: what was seen, decided and queued, and what the next round should do first.)
 
 - **2026-11-19, interactive session (pre-launch):**
@@ -276,3 +277,45 @@ Notes on the token-merging grid:
        Then tick A1 and A3, and A4 (screens done, no test picks, see above).
     3. Don't add GPU jobs that can't start before 10:00. If the queue empties early, the only planned GPU work left is Phase D: `python -m transferner.data.pseudo_boxes`, about 30K images at 20 per genus. Throughput is unmeasured, so queue it only if it would start before about 09:30.
     4. After 10:00 everything left is phone work (D-032's list), Phase B's bryophyte field photos (needs the manifests free), Phase C's second source (USDA still 504), and Phase D training. Unless a job failed, write `STATUS: DONE` under "## Journal" with that summary.
+- **2026-11-19, round 4 (09:25–10:02):**
+  - **Found:**
+    - All jobs since round 3 finished with rc 0: `res210`, `w4a8dyn_g32` (val-only), `base_subset`, `drop2` and `drop4`.
+    - **`res210`:** test 84.15% (−0.80 pt) at −12% GFLOPs and +7% GPU img/s. DMR 5.68% / 4.67%. At `tome_r2`'s FLOPs it scores 0.14 pt more (paired McNemar p = 0.019) and keeps a plain static graph, so it is the first structural fallback in D-032.
+    - **Block dropping is dominated** (Δ against `base_subset`, 83.22%):
+      - `drop2`: −2.92 pt for −6% GFLOPs; contact DMR 6.16% → 8.63%.
+      - `drop4`: −5.84 pt (77.39%) for −12.5% GFLOPs, the same saving as `res210` at seven times the loss; contact DMR 10.40%.
+      - `res210` saves twice `drop2`'s FLOPs at about a quarter of the loss. Block dropping is off D-032's fallback list.
+    - **8da4w** (`w4a8dyn_g32`, val-only): regional val 89.66% against `w4a16_g32`'s 89.63%. No test run (D-032).
+    - **Round 3's open val_ext signal is real** (paired McNemar on the saved val_ext embeddings, CPU):
+      - Static W8A8 on top of `res196`: −0.76 pt, p = 0.004.
+      - On top of `tome_r2`: −0.97 pt, p = 0.001.
+      - Static W8A8 alone (vs FP16): −0.03 pt, p = 0.95.
+      - Regional val is identical to the structure's in both combos.
+      - Calibration already runs through the structural model at the variant's resolution, and min/max ranges don't depend on the sampling seed. So this is an interaction, not calibration noise, and round 3's "different calibration seed" check would not separate it.
+      - **Decided:** caveat in D-032 only. No structural cut is shipped by default, and no GPU time is left tonight.
+  - **Code (CPU):**
+    - `efficiency_report`: agreement and McNemar are now recomputed from saved predictions against each row's own reference. Before this, `drop2`'s "agree ref" was against `fp16` even though the row says `base_subset`. The `fp16`-referenced rows reproduce the CSV values exactly.
+    - The Pareto figure now labels retrained heads and keeps crowded labels apart.
+    - `pseudo_boxes.drop_nested()` is the training-time cleanup proposed in round 3: drop boxes ≥ 90% inside a larger box of the same image. On smoke64 it removes 19 of 77 boxes (13 are "a leaf"), boxes per image go from 1.60 to 1.21 and the median area from 0.29 to 0.60. `boxes.parquet` stays raw, and `main()` is unchanged.
+  - **Phase C:** USDA PLANTS still returns 504 (`plants.sc.egov.usda.gov`), as of 09:31. That was this round's one retry.
+  - **Side signal for Phase B (not acted on):**
+    - `base_subset`'s balanced head (40 images per species, `w_field` 8) reaches val_ext 57.77%, against the D-030 production head's 51.91%. `val_ext_bryo` is 36.39% against 32.47%.
+    - It costs 2.68 pt of regional val (88.82 vs 91.50), so it fails D-026 as it stands.
+    - **Not a new lever.** It's the known trade-off between regional val and val_ext that D-025/D-026 already set. Logit adjustment is in the recipe (τ = 0.5), τ = 1 cost 0.8 pt of regional val, and rare-species shrinkage `shrink_b100_k30` reached val_ext 55.2% at regional val 89.35%. Under the D-026 rule (≤ 0.1 pt), none of these pass. Nothing queued.
+    - The efficiency run's `val_rare` is a different, smaller set (zero-shot 31% vs 60.5%), so ignore that column when comparing.
+  - **Queue:** no new long jobs. The only addition was a bounded OWLv2 throughput test, `pseudo_boxes --limit 1024` into `artifacts/pseudo_boxes_speed/`, after `drop4`. The plan said to measure it, and the full run was not to start after about 09:30.
+    - Its first attempt (09:56) **crashed on the GPU path**: the DataLoader's image sizes were on the CPU and OWLv2's boxes on CUDA. Round 3's CPU smoke test couldn't see that.
+    - Fixed in 347f8b1 (`boxes_for` moves the sizes to the logits' device) and requeued. It started at 09:58:17 and finished with rc 0.
+    - **Throughput: 29–33 img/s.** The full default selection (20 per genus, train/val/test) is 27,017 images over 1,362 genera, **about 15 min of GPU**.
+    - On these 1,024 images: fallback 28.8%, 1.80 boxes per image, median area 0.19. `drop_nested()` removes 323 of 1,310 boxes (211 are "a leaf"), giving 1.35 boxes per image and a median area of 0.35.
+  - **Status:** Phase A is finished (A1–A6 ticked). B, C and D are blocked on things this loop can't do before the 10:00 stop:
+    - B: the bryophyte field-photo pull rewrites the manifests and takes hours of download.
+    - C: USDA is down, and there is no other structured source.
+    - D: detector training is GPU-heavy, and the field video needs the user's walks.
+    - D-032's phone list needs the Pixel.
+    Hence `STATUS: DONE`.
+  - **Next session should first:**
+    1. Read D-031/D-032 and `results/EFFICIENCY.md`. Those are the efficiency answer. The phone work is D-032's "Needs the phone" list.
+    2. Phase D: run `python -m transferner.data.pseudo_boxes` through the queue (about 15 min, 27K images), then write `train/train_detector.py` with `drop_nested()` at load.
+    3. Phase B: the bryophyte field-photo pull (needs a `train_only` flag in `splits.py`), the one moss lever left untried.
+    4. If an NPU build ever needs a structural cut: screen that exact static combo on val_ext first, and try calibrating on a pool that includes `train_ext` field photos.

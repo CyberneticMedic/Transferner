@@ -13,4 +13,5 @@ step python -m transferner.train.embed_text
 step python -m transferner.train.embed_images --force
 step python -m transferner.train.linear_probe
 step python -m transferner.train.calibrate
+step python -m transferner.eval.evaluate
 echo "=== $(date '+%F %T') done"

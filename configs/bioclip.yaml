@@ -13,10 +13,14 @@ text:
   combine: mean                 # average normalized template embeddings per species
 heads:
   zero_shot: true
-  linear_probe:
+  linear_probe:                 # recipe from the 2026-11-18 sweep (D-025); selected on regional val
     init_from_text: true
-    epochs: 30
+    epochs: 10
     lr: 1.0e-3
+    anchor: 1.0                 # L2 pull of W back to the text embeddings
+    logit_adjust: 0.5           # train on logits + 0.5*log(train prior); predict without
+    freeze_zero_shot: false     # freezing rare species' text rows did not keep their zero-shot accuracy
+    label_smoothing: 0.0        # 0.1 cost 0.3 pt regional val
   lora:                         # experimental only (D-010)
     enabled: false
     r: 16

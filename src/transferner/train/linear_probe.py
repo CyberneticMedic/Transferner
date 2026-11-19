@@ -31,6 +31,9 @@ def load_split(emb, s):
     return e, y, torch.tensor((meta.source == REGIONAL).to_numpy())
 
 
+RARE_TRAIN = 100      # species with fewer train images than this form the "val_rare" report slice
+
+
 @torch.no_grad()
 def topk(logits_fn, e, y, ks=(1, 5), bs=65536):
     hits = {k: 0 for k in ks}
@@ -51,6 +54,10 @@ def main() -> None:
     ap.add_argument("--label-smoothing", type=float, default=None)
     ap.add_argument("--epochs", type=int, default=None, help="override configs/bioclip.yaml")
     ap.add_argument("--select", choices=["val", "val_regional"], default="val_regional")
+    ap.add_argument("--logit-adjust", type=float, default=None,
+                    help="tau: train on logits + tau*log(train prior), predict without (long-tail fix)")
+    ap.add_argument("--freeze-zero-shot", action=argparse.BooleanOptionalAction, default=None,
+                    help="keep zero_shot_only species' text rows frozen")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--emb", default="artifacts/img_emb", help="embedding dir, relative to TRANSFERNER_DATA")
     ap.add_argument("--out", default="artifacts/probe.pt")
@@ -58,27 +65,35 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = dict(load("bioclip")["heads"]["linear_probe"])
-    for k in ("epochs", "lr", "anchor", "label_smoothing"):
+    for k in ("epochs", "lr", "anchor", "label_smoothing", "logit_adjust", "freeze_zero_shot"):
         if getattr(args, k) is not None:
             cfg[k] = getattr(args, k)
     cfg.setdefault("anchor", 1e-2)
     cfg.setdefault("label_smoothing", 0.0)
+    cfg.setdefault("logit_adjust", 0.0)
+    cfg.setdefault("freeze_zero_shot", True)
     torch.manual_seed(args.seed)
     root = data_root()
     emb = root / args.emb
     sp = pd.read_parquet(root / "manifests/species.parquet").sort_values("class_idx")
     T = torch.from_numpy(np.load(root / "artifacts/text_emb.npy")).cuda()
     scale = float((root / "artifacts/logit_scale.txt").read_text())
-    frozen = torch.tensor(sp.zero_shot_only.to_numpy()).cuda()
+    frozen = torch.tensor(sp.zero_shot_only.to_numpy() & cfg["freeze_zero_shot"]).cuda()
+    rare = torch.tensor((sp.n_train < RARE_TRAIN).to_numpy())
 
     tr_e, tr_y, _ = load_split(emb, "train")
     va_e, va_y, va_reg = load_split(emb, "val")
     te_e, te_y, _ = load_split(emb, "test")
     vr_e, vr_y = va_e[va_reg], va_y[va_reg]
+    vrare = rare[va_y]
+    vk_e, vk_y = va_e[vrare], va_y[vrare]
+    counts = torch.bincount(tr_y, minlength=len(T)).float() + 1
+    adj = (cfg["logit_adjust"] * (counts / counts.sum()).log()).cuda()
     log = RunLog("linear_probe")
 
     def evaluate(fn, prefix, test=False):
-        out = {f"{prefix}_val": topk(fn, va_e, va_y), f"{prefix}_val_regional": topk(fn, vr_e, vr_y)}
+        out = {f"{prefix}_val": topk(fn, va_e, va_y), f"{prefix}_val_regional": topk(fn, vr_e, vr_y),
+               f"{prefix}_val_rare": topk(fn, vk_e, vk_y)}
         if test:
             out[f"{prefix}_test"] = topk(fn, te_e, te_y)
         return out
@@ -101,7 +116,7 @@ def main() -> None:
         tot = 0.0
         for i in range(0, len(perm), args.batch):
             idx = perm[i:i + args.batch]
-            loss = F.cross_entropy(probe(tr_e_gpu[idx].float()), tr_y_gpu[idx],
+            loss = F.cross_entropy(probe(tr_e_gpu[idx].float()) + adj, tr_y_gpu[idx],
                                    label_smoothing=cfg["label_smoothing"])
             loss = loss + cfg["anchor"] * (W - T).pow(2).sum(-1).mean()
             opt.zero_grad(set_to_none=True)
@@ -118,7 +133,7 @@ def main() -> None:
             log.log(ep, k[2:], **d)
         score = v[f"p_{args.select}"]["top1"]
         print(f"epoch {ep:2d} loss {tot / len(tr_e):.4f} val {v['p_val']['top1']:.4f} "
-              f"val_regional {v['p_val_regional']['top1']:.4f}", flush=True)
+              f"val_regional {v['p_val_regional']['top1']:.4f} val_rare {v['p_val_rare']['top1']:.4f}", flush=True)
         if score > best:
             best, best_ep, best_state = score, ep, (W.detach().clone(), b.detach().clone())
 
@@ -131,6 +146,7 @@ def main() -> None:
                 **{f"{k}_{m}": v for k, d in res.items() for m, v in d.items()},
                 tag=args.tag, lr=cfg["lr"], anchor=cfg["anchor"], wd=args.wd,
                 label_smoothing=cfg["label_smoothing"], epochs=cfg["epochs"], best_epoch=best_ep,
+                logit_adjust=cfg["logit_adjust"], freeze_zero_shot=cfg["freeze_zero_shot"],
                 select=args.select, out=args.out)
     log.close()
 

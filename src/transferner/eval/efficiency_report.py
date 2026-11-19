@@ -9,7 +9,9 @@ and against weight MB, two panels, one y-axis each).
 Reference per row: production-head variants are compared with `fp16`; retrained-head variants
 (--retrain, --drop) with `base_subset`, the same 40-per-species head on unmodified features.
 DMR (dangerous miss rate, contact / ingestion) is recomputed here from each variant's saved
-test embeddings and head, with the toxic sets of the current trait table (Phase C).
+test embeddings and head, with the toxic sets of the current trait table (Phase C). Agreement
+and McNemar are recomputed the same way against the row's own reference (efficiency.csv's
+`*_agree_ref` columns are always against `fp16`, which is wrong for retrained heads).
 Latest row per name wins; smoke rows live in efficiency_smoke.csv and are ignored."""
 from __future__ import annotations
 
@@ -48,11 +50,12 @@ def load_table() -> pd.DataFrame:
 
 
 @torch.no_grad()
-def dmr_for(name: str, head: str, tox: dict[str, np.ndarray]) -> dict:
+def test_preds(name: str, head: str) -> tuple[np.ndarray, np.ndarray] | None:
+    """Top-1 test predictions and labels from a variant's saved embeddings and its head."""
     root = data_root()
     d = root / "artifacts/efficiency" / name
     if not (d / "test.npy").exists():
-        return {}
+        return None
     torch.set_num_threads(8)
     pr = torch.load((d if head == "retrained" else prod_head_dir(root)) / "probe.pt", map_location="cpu")
     W, b, s = pr["W"].float(), pr["b"].float(), pr["scale"]
@@ -60,10 +63,23 @@ def dmr_for(name: str, head: str, tox: dict[str, np.ndarray]) -> dict:
     pred = np.concatenate([(s * torch.from_numpy(np.asarray(e[i:i + 16384], np.float32)) @ W.T + b).argmax(-1).numpy()
                            for i in range(0, len(e), 16384)])
     y = pd.read_parquet(d / "test.parquet").class_idx.to_numpy()
-    out = {}
-    for kind in ("contact_toxic", "ingestion_toxic"):
-        out[f"dmr_{kind.split('_')[0]}"] = M.dmr(pred, y, tox[kind])["dmr"]
-    return out
+    return pred, y
+
+
+def dmr_for(py: tuple[np.ndarray, np.ndarray] | None, tox: dict[str, np.ndarray]) -> dict:
+    if py is None:
+        return {}
+    pred, y = py
+    return {f"dmr_{kind.split('_')[0]}": M.dmr(pred, y, tox[kind])["dmr"]
+            for kind in ("contact_toxic", "ingestion_toxic")}
+
+
+def vs_ref(py, ref_py) -> dict:
+    """Top-1 agreement and exact McNemar p against the reference, on the same test rows."""
+    if py is None or ref_py is None or len(py[1]) != len(ref_py[1]) or not np.array_equal(py[1], ref_py[1]):
+        return {"test_agree_ref": np.nan, "test_mcnemar_p_ref": np.nan}
+    (p, y), (rp, _) = py, ref_py
+    return {"test_agree_ref": float((p == rp).mean()), "test_mcnemar_p_ref": M.mcnemar(rp == y, p == y)["p"]}
 
 
 def pareto(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -133,8 +149,13 @@ def main() -> None:
     df = load_table()
     sp = pd.read_parquet(root / "manifests/species.parquet").sort_values("class_idx").reset_index(drop=True)
     tox = trait_flags(sp)
-    d = pd.DataFrame([dmr_for(r.name, r.head, tox) for r in df.itertuples()], index=df.index)
+    preds = {r.name: test_preds(r.name, r.head) for r in df.itertuples()}
+    d = pd.DataFrame([dmr_for(preds[r.name], tox) for r in df.itertuples()], index=df.index)
     df = df.join(d) if len(d.columns) else df
+    for i, r in df.iterrows():                    # agreement / McNemar against the row's own reference
+        for k, v in (vs_ref(preds[r["name"]], preds.get(r["ref"])) if r["ref"] else
+                     {"test_agree_ref": np.nan, "test_mcnemar_p_ref": np.nan}).items():
+            df.at[i, k] = v
     by_name = df.set_index("name")
     for c in ("test_top1", "val_regional_top1"):
         refv = df.ref.map(lambda n: by_name[c].get(n, np.nan) if n else np.nan)

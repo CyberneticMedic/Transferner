@@ -15,7 +15,13 @@ species that regional val cannot; --select balanced averages val_regional and va
 Rare-species shrinkage (D-026): after checkpoint selection, rows of species with fewer than
 shrink_below training images become normalize(a*W + (1-a)*text), a = n/(n + shrink_k).
 With few images the trained row is mostly noise, and a pure-text row cannot compete with
-image-trained rows, so the probe alone fell *below* zero-shot on rare species."""
+image-trained rows, so the probe alone fell *below* zero-shot on rare species.
+
+Phase B (bryophytes): every run also reports the bryophyte slices (Bryophyta + Marchantiophyta)
+of regional val and val_ext (`*_val_regional_bryo`, `*_val_ext_bryo`); regional val alone has
+only ~240 bryophyte photos. Sample weights (default 1, unchanged recipe): --w-field multiplies
+the loss weight of field photos (gbif_regional and train_ext rows), --w-bryo that of bryophyte
+species. Experiments must pass their own --out: the default overwrites the production probe."""
 from __future__ import annotations
 
 import argparse
@@ -69,6 +75,8 @@ def main() -> None:
                     help="tau: train on logits + tau*log(train prior), predict without (long-tail fix)")
     ap.add_argument("--freeze-zero-shot", action=argparse.BooleanOptionalAction, default=None,
                     help="keep zero_shot_only species' text rows frozen")
+    ap.add_argument("--w-field", type=float, default=1.0, help="loss weight of field photos (regional, train_ext)")
+    ap.add_argument("--w-bryo", type=float, default=1.0, help="loss weight of bryophyte species")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--emb", default="artifacts/img_emb", help="embedding dir, relative to TRANSFERNER_DATA")
     ap.add_argument("--out", default="artifacts/probe.pt")
@@ -96,10 +104,14 @@ def main() -> None:
     frozen = torch.tensor(sp.zero_shot_only.to_numpy() & cfg["freeze_zero_shot"]).cuda()
     rare = torch.tensor((sp.n_train < RARE_TRAIN).to_numpy())
 
-    tr_e, tr_y, _ = load_split(emb, "train")
+    tr_e, tr_y, tr_field = load_split(emb, "train")
     if cfg["train_ext"]:
         ex_e, ex_y, _ = load_split(emb, "train_ext")
         tr_e, tr_y = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y])
+        tr_field = torch.cat([tr_field, torch.ones(len(ex_y), dtype=torch.bool)])   # train_ext: field photos
+    bryo = torch.tensor(sp.phylum.isin(["Bryophyta", "Marchantiophyta"]).to_numpy())
+    tr_w = torch.where(tr_field, args.w_field, 1.0) * torch.where(bryo[tr_y], args.w_bryo, 1.0)
+    weighted = args.w_field != 1.0 or args.w_bryo != 1.0
     has_ext = (emb / "val_ext.npy").exists()
     if has_ext:
         xv_e, xv_y, _ = load_split(emb, "val_ext")
@@ -112,11 +124,15 @@ def main() -> None:
     adj = (cfg["logit_adjust"] * (counts / counts.sum()).log()).cuda()
     log = RunLog("linear_probe")
 
+    vb = bryo[vr_y]
     def evaluate(fn, prefix, test=False):
         out = {f"{prefix}_val": topk(fn, va_e, va_y), f"{prefix}_val_regional": topk(fn, vr_e, vr_y),
-               f"{prefix}_val_rare": topk(fn, vk_e, vk_y)}
+               f"{prefix}_val_rare": topk(fn, vk_e, vk_y),
+               f"{prefix}_val_regional_bryo": topk(fn, vr_e[vb], vr_y[vb])}
         if has_ext:
             out[f"{prefix}_val_ext"] = topk(fn, xv_e, xv_y)
+            xb = bryo[xv_y]
+            out[f"{prefix}_val_ext_bryo"] = topk(fn, xv_e[xb], xv_y[xb])
         if test:
             out[f"{prefix}_test"] = topk(fn, te_e, te_y)
         return out
@@ -130,7 +146,7 @@ def main() -> None:
     opt = torch.optim.AdamW([W, b], lr=cfg["lr"], weight_decay=args.wd)
     steps = cfg["epochs"] * ((len(tr_e) + args.batch - 1) // args.batch)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg["lr"], total_steps=steps, pct_start=0.05)
-    tr_e_gpu, tr_y_gpu = tr_e.cuda(), tr_y.cuda()
+    tr_e_gpu, tr_y_gpu, tr_w_gpu = tr_e.cuda(), tr_y.cuda(), tr_w.cuda()
     probe = lambda e: scale * e @ F.normalize(W, dim=-1).T + b              # noqa: E731
 
     best, best_ep, best_state = -1.0, -1, None
@@ -139,8 +155,9 @@ def main() -> None:
         tot = 0.0
         for i in range(0, len(perm), args.batch):
             idx = perm[i:i + args.batch]
-            loss = F.cross_entropy(probe(tr_e_gpu[idx].float()) + adj, tr_y_gpu[idx],
-                                   label_smoothing=cfg["label_smoothing"])
+            ce = F.cross_entropy(probe(tr_e_gpu[idx].float()) + adj, tr_y_gpu[idx],
+                                 label_smoothing=cfg["label_smoothing"], reduction="none")
+            loss = (ce * tr_w_gpu[idx]).sum() / tr_w_gpu[idx].sum() if weighted else ce.mean()
             loss = loss + cfg["anchor"] * (W - T).pow(2).sum(-1).mean()
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -179,7 +196,7 @@ def main() -> None:
                 label_smoothing=cfg["label_smoothing"], epochs=cfg["epochs"], best_epoch=best_ep,
                 logit_adjust=cfg["logit_adjust"], freeze_zero_shot=cfg["freeze_zero_shot"],
                 select=args.select, train_ext=cfg["train_ext"], shrink_k=cfg["shrink_k"],
-                shrink_below=cfg["shrink_below"], out=args.out)
+                shrink_below=cfg["shrink_below"], w_field=args.w_field, w_bryo=args.w_bryo, out=args.out)
     log.close()
 
 

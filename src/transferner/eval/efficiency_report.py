@@ -102,7 +102,7 @@ def figure(df: pd.DataFrame, out) -> None:
         for fam, c in COLOR.items():
             s = t[(t.family == fam) & (t["head"] != "retrained")]
             ax.scatter(s[col], 100 * s.test_top1, s=42, color=c, edgecolors="white", linewidths=1.5,
-                       label=fam, zorder=3)
+                       label=fam if len(s) else None, zorder=3)
             s = t[(t.family == fam) & (t["head"] == "retrained")]          # hollow: own head, see base_subset
             ax.scatter(s[col], 100 * s.test_top1, s=42, facecolors="white", edgecolors=c, linewidths=2,
                        label=f"{fam}, retrained head" if len(s) else None, zorder=3)
@@ -112,9 +112,14 @@ def figure(df: pd.DataFrame, out) -> None:
             ax.axhline(100 * TARGET * ref.test_top1.iloc[0], color=MUTED, lw=1, zorder=1)
             ax.annotate("98% of FP16 (acceptance)", (ax.get_xlim()[0], 100 * TARGET * ref.test_top1.iloc[0]),
                         xytext=(4, 3), textcoords="offset points", fontsize=8, color=MUTED)
-        front = t[pareto(t[col].to_numpy(), t.test_top1.to_numpy())]
-        for r in front.itertuples():
-            ax.annotate(r.name, (getattr(r, col), 100 * r.test_top1), xytext=(5, -10), textcoords="offset points",
+        # labels: the Pareto front, plus retrained-head points (judged against base_subset, not FP16)
+        lab = t[pareto(t[col].to_numpy(), t.test_top1.to_numpy()) | (t["head"] == "retrained").to_numpy()]
+        lx, ly = lab[col].to_numpy(float), 100 * lab.test_top1.to_numpy(float)
+        xr = np.ptp(t[col].to_numpy(float)) or 1.0
+        for i, r in enumerate(lab.itertuples()):
+            near = (np.abs(lx - lx[i]) < 0.06 * xr) & (np.abs(ly - ly[i]) < 0.5) & (np.arange(len(lab)) != i)
+            above = near.any() and ly[i] >= ly[near].max()     # of two crowded labels, the upper goes above
+            ax.annotate(r.name, (lx[i], ly[i]), xytext=(5, 4) if above else (5, -10), textcoords="offset points",
                         fontsize=8, color=INK)
         ax.set_xlabel(xl, color=INK)
         ax.grid(True, color=GRID, lw=1)
@@ -128,7 +133,7 @@ def figure(df: pd.DataFrame, out) -> None:
     h, lab = axes[0].get_legend_handles_labels()
     fig.legend(h, lab, frameon=False, fontsize=8, loc="upper left", bbox_to_anchor=(0.01, 0.95),
                ncol=len(lab), handletextpad=0.3, columnspacing=1.2)
-    fig.suptitle("BioCLIP 2.5 ViT-H/14 efficiency variants: test top-1 vs cost (labels: Pareto front)",
+    fig.suptitle("BioCLIP 2.5 ViT-H/14 efficiency variants: test top-1 vs cost (labels: Pareto front and retrained heads)",
                  fontsize=10, color=INK, x=0.01, ha="left")
     fig.text(0.01, 0.005, "Fake-quantized variants keep FP16 FLOPs; their saving shows in the weight panel. "
              "Retrained-head variants are judged against base_subset in EFFICIENCY.md.", fontsize=7, color=MUTED)

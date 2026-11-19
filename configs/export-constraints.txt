@@ -1,0 +1,7 @@
+# .venv-export (CPU torch, litert-torch) - see src/transferner/export/litert.py
+torch==2.14.1
+torchvision==0.29.2
+# jax 0.12.1 (2026-11-18) lowers erf/GELU with vhlo.fma, which litert-torch 0.10.0's
+# StableHLO 1.19 serializer rejects ("failed to legalize vhlo.fma_v1"). Pin below it.
+jax<0.12.1
+jaxlib<0.12.1

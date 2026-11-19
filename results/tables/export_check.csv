@@ -1,0 +1,8 @@
+time,recipe,torch,images,threads,litert_torch,status,error,convert_s,peak_rss_gb,file_mb,cos_mean,cos_min,top1_agree,top1_ref,top1_tflite,x86_ms_median,calib,pt2e_cos_mean
+2026-11-19 04:53,w8,2.14.1+cpu,64,8,0.10.0,convert_failed,"JaxRuntimeError('INVALID_ARGUMENT: Failed to serialize StableHLO to plugin version 1.19.0;\n\nDetailed error from MLIR: -:32:11: error: failed to legalize operation \'vhlo.fma_v1\' that was explicitly marked illegal: %39 = ""vhlo.fma_v1""(%37, %36, %38) : (!vhlo.tensor_v1<1x257x5120x!vhlo.f32_v1>, !vhlo.tensor_v1<1x257x5120x!vhlo.f32_v1>, !vhlo.tensor_v1<1x257x5120x!vhlo.f32_v1>) -> !vhlo.tensor_v1<",11,8.0,,,,,,,,,
+2026-11-19 04:56,w8,2.14.1+cpu,64,8,0.10.0,ok,,74,16.1,609.8,0.9997258186340332,0.9987515211105347,1.0,0.984375,0.984375,324.5,,
+2026-11-19 04:58,w8dyn,2.14.1+cpu,64,8,0.10.0,ok,,77,16.1,609.7,0.9981574416160583,0.9940543174743652,0.984375,0.984375,0.96875,110.4,,
+2026-11-19 05:01,fp16,2.14.1+cpu,64,8,0.10.0,ok,,75,17.0,1207.5,0.9999999403953552,0.9999990463256836,1.0,0.984375,0.984375,321.9,,
+2026-11-19 05:03,int8static,2.14.1+cpu,64,8,0.10.0,ok,,107,9.3,618.3,0.25013548135757446,0.17803798615932465,0.0,0.984375,0.0,123.1,32.0,
+2026-11-19 05:08,int8static_sq0.5,2.14.1+cpu,64,8,0.10.0,ok,,267,13.7,618.3,0.245155930519104,0.14921143651008606,0.0,0.984375,0.0,122.1,32.0,
+2026-11-19 05:15,int8static_sq0.5_linear,2.14.1+cpu,64,8,0.10.0,ok,,314,13.7,620.4,0.9745697975158691,0.9398796558380127,1.0,0.984375,0.984375,125.9,32.0,0.9735302925109863

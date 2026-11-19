@@ -11,13 +11,13 @@ import csv
 import time
 from pathlib import Path
 
-from .config import REPO
+from .config import RESULTS
 
 
 class RunLog:
     def __init__(self, name: str):
         self.run_id = f"{time.strftime('%Y%m%d-%H%M%S')}_{name}"
-        self.dir = REPO / "results" / "runs" / self.run_id
+        self.dir = RESULTS / "runs" / self.run_id
         self.dir.mkdir(parents=True, exist_ok=True)
         self._f = open(self.dir / "metrics.csv", "a", newline="")
         self._w = csv.writer(self._f)
@@ -31,7 +31,7 @@ class RunLog:
 
     def summary(self, table: str, **row) -> None:
         """Append one row (with run_id) to results/tables/<table>.csv."""
-        path = REPO / "results" / "tables" / f"{table}.csv"
+        path = RESULTS / "tables" / f"{table}.csv"
         row = {"run_id": self.run_id, **row}
         old_rows, fields, rewrite = [], list(row), not path.exists()
         if path.exists():

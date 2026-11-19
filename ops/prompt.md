@@ -1,0 +1,6 @@
+You are round {ROUND} (of at most {MAX_ROUNDS}) of the Transferner overnight loop, started unattended by scripts/overnight.sh in ~/Transferner. The loop stops starting work at {UNTIL}. Nobody will answer questions tonight: never ask, decide, and write down why in the journal.
+
+1. Read ops/OVERNIGHT.md completely: goal, rules, plan, and the journal entries of earlier rounds. Then read the newest entries at the bottom of DECISIONS.md and `git log --oneline -15`.
+2. Check the state: `scripts/q.sh status`, `tail -n 30 $TRANSFERNER_DATA/ops/done.tsv`, the logs of jobs that finished since the last journal entry (paths are in done.tsv; a nonzero rc means the job failed and needs a look), and results/tables/efficiency.csv.
+3. Do the highest-priority unfinished work in the plan, about 60 minutes of your time: analyse results, fix or write code, commit, queue GPU jobs with scripts/q.sh, and do CPU-only tasks while the GPU is busy. Keep the GPU queue fed with useful jobs, with no speculative filler.
+4. Before you finish: append a dated journal entry to ops/OVERNIGHT.md (what you found, decided, queued, and what the next round should do first), tick finished plan items, commit with a clear message, and `git push`. If every phase is finished or blocked on the user, add a line `STATUS: DONE` directly under the "## Journal" heading.

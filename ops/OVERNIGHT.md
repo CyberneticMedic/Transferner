@@ -62,9 +62,9 @@ Notes on the token-merging grid:
 
 ## Plan
 ### Phase A: efficiency (priority)
-- [ ] **A1 (round 2: 4 of 6 done):**
-  - Done: `fp16` 84.95, `w8a16` 84.94, `w8a8dyn` 84.96, `w4a16_g128` 84.37 (−0.58 pt, 315 MB).
-  - Queued after A3's ToMe and resolution jobs: `w4a16_g32` and `w4a8dyn_g32`.
+- [ ] **A1 (round 3: 5 of 6 done):**
+  - Done: `fp16` 84.95, `w8a16` 84.94, `w8a8dyn` 84.96, `w4a16_g128` 84.37 (−0.58 pt, 315 MB), `w4a16_g32` 84.52 (−0.43 pt, 343 MB).
+  - Queued: `w4a8dyn_g32` (after the A4 screens and `res210`).
   - References and weight-only / dynamic quantization:
   - `fp16`
   - `w8a16`
@@ -76,7 +76,10 @@ Notes on the token-merging grid:
   - The margin is thin and contact DMR rises from 5.46% to 6.20%.
   - Queued, val-only: `w8a8p_s0.5_k1` and `w8a8p_s0.5_k4`, which keep `b1.fc1` (or the top 4 layers) in FP16. `b1.fc1` is 3.3× more sensitive than any other layer. This shows how much one fallback layer buys. Run k1 on test only if it recovers ≥ 0.5 pt on val and the GPU has time.
   - The calibration sampler is seeded from commit 9650bac on, so earlier static runs carry about ±0.15 pt of calibration noise.
-- [ ] **A3 (queued): structural variants.**
+  - **Round 3: min/max activation ranges remove the loss on val** (`w8a8_s0.5_p100`: regional val 90.10% vs FP16 90.03% and k0 88.75–88.90%; cosine 0.9955 vs 0.944). The real PT2E graph agrees: `MinMaxObserver` gives cosine 0.995 against 0.975 for the default `HistogramObserver` (`export_check.csv`, `--pt2e-only`). **Test: 84.82% (−0.12 pt, rel 0.9985), DMR 5.56% / 4.42%** (D-028: 83.52%, 6.20% / 4.68%). Recorded as **D-031**, which replaces D-028's ranges.
+- [ ] **A3: structural variants.** *(Round 3: ToMe and resolution done; `res210` added and queued, then `base_subset`, `drop2`, `drop4`.)*
+  - Test top-1 (Δ vs FP16, GFLOPs): `tome_r2` 84.01 (−0.94, 292), `tome_r4` 82.24 (−2.71, 249), `tome_r6` 78.96 (−5.99, 207), `res196` 83.13 (−1.81, 255, 247 img/s vs 188), `res168` 78.49 (−6.46, 186).
+  - Contact DMR rises faster than top-1 falls: `res196` 5.46 → 6.40%, `tome_r2` → 5.72%, `tome_r4` → 7.24%.
   - `tome_r2`, `tome_r4`, `tome_r6`
   - `res196`, `res168`
   - `base_subset` (retrained head on 40 images per species), then `drop2` and `drop4`. A dropped-block variant must be compared with `base_subset`, not with the production head.
@@ -84,14 +87,16 @@ Notes on the token-merging grid:
   - **GPU time is the constraint (round 2):** the queue runs until about 09:10, and the runner starts nothing after 10:00. Screen combos with `--val-only` (about 5 min each, 27K images), then run test (about 20–36 min) only for the 1–2 picks.
   - **Insert combos ahead of `base_subset`/`drop2`/`drop4`.** Those are the lowest-value jobs (−6%/−12% FLOPs, need a retrained head), so `drop4` is the first job to cut if time runs out.
   - Weight-only and dynamic INT8 are lossless (w8a16 −0.01 pt, w8a8dyn +0.01 pt), so a `w8a16 + tome_rX` combo will land within noise of `tome_rX`. Prefer combos whose interaction is uncertain: static W8A8 + tome/res, and W4 + tome/res.
+  - **Round 3 screens (val-only, queued after the p100 test):** `w8a8_s0.5_p100_res196` and `w8a8_s0.5_p100_tome2`. Compare each with its float structure's val (`res196` 88.25, `tome_r2` 89.23). If the static penalty on top of the structure is ≤ 0.2 pt val, the combo is additive and needs no test run; the report can cite the screen. Run test only for a combo that is a real candidate (see the round 3 journal for the time rule).
 - [ ] **A5: report.**
   - [x] Add `src/transferner/eval/efficiency_report.py`, producing `results/EFFICIENCY.md` (a table of every variant: top-1/top-5 on test, Δ vs FP16, val, weight MB, GFLOPs) and `results/figures/efficiency_pareto.png` (test top-1 against GFLOPs and against weight MB). Load the `dataviz` skill before writing the chart code. *(Round 1: written and checked on a synthetic table. It runs on the CPU and also reports DMR per variant from the saved embeddings. Rerun it whenever rows land: `python -m transferner.eval.efficiency_report`.)*
-  - Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile.
+  - [x] Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile. *(Round 3: **D-032**. GPU: W8A16, with W4A16 g32 as the memory fallback. NPU: static W8A8 per D-031. CPU: 8da8w. No structural cut by default. Still to add: `res210`, `drop2`/`drop4` and the 8da4w val number.)*
 - [x] **A6 (optional, after A5): export feasibility on x86.** *(LiteRT part done in round 2, recorded as D-029. ExecuTorch was not tried: it pins torch 2.15 and would need its own venv.)*
   - Set up `.venv-export` (CPU torch) with ai-edge-torch and/or executorch.
   - Export the FP16 and W8 variants and check outputs against PyTorch on 64 images.
   - Record x86 latency only as a proxy.
   - Skip if the toolchain fights back for more than one round, and write down why.
+  - **Round 3:** `export/litert.py --act-observer minmax` and `--pt2e-only` (checks the PT2E graph without the 14–17 GB conversion; 8 GB RSS). Linear-only static INT8 + SmoothQuant 0.5, 128 calibration and 128 check images: min/max cosine 0.9951 (min 0.984), 127/128 agreement; histogram 0.9746 (min 0.931), 125/128.
   - **Round 2 (started early, since the CPU was idle):** `.venv-export` has torch 2.14.1+cpu, litert-torch 0.10.0, ai-edge-litert 2.3.0 and open_clip 4.2.2. ExecuTorch 1.6 pins torch 2.15, which conflicts with litert-torch (< 2.15), so it would need its own venv (`.venv-et`).
   - `export/litert.py --recipe {fp32,fp16,w8,w8dyn}` converts the image tower, checks it against PyTorch FP32 on 64 regional val photos (cosine, top-1 agreement under the production head) and times it on x86. Results go to `results/tables/export_check.csv`.
   - Run it with `cd /tmp && PYTHONPATH=~/Transferner/src ~/Transferner/.venv-export/bin/python -m transferner.export.litert --recipe w8`. It's CPU only, with a memory guard at 16 GB free.
@@ -160,6 +165,8 @@ Notes on the token-merging grid:
 - **Licences:** verify them. OWLv2 and timm's MNv4 weights should be Apache-2.0.
 - **Round 1 assessment:** the queue (A1, A2, B, A3) runs until about 09:00, and A4 comes after it, so Phase D's GPU work will not fit before the 10:00 stop tonight. A later round with spare CPU time may write `pseudo_boxes.py` and test it on a few images on the CPU. Both stubs are still `NotImplementedError`. `transformers` 5.23 and `timm` 1.0.31 are already in `.venv`.
 - **Packages:** install missing ones such as `transformers` and `timm` into `.venv` with `uv`.
+- [x] **Round 3: licences checked** (HF API, cached under `raw/hf_cards/`): `google/owlv2-base-patch16-ensemble` and `timm/mobilenetv4_conv_medium.e500_r256_in1k` are both Apache-2.0.
+- [x] **Round 3: `data/pseudo_boxes.py` written and CPU-tested.** OWLv2 over at most `--per-genus` (default 20) non-specimen images per genus from train/val/test. Boxes keep their best prompt, go through class-agnostic NMS at IoU 0.5 and are capped at 10 per image, with a full-frame fallback. OWLv2's padded-square boxes are mapped back to the original image, and the geometry was checked visually on portrait and landscape photos. Output is resumable in 2,048-image parts. Run it on the GPU through the queue, `python -m transferner.data.pseudo_boxes`, once Phase A's GPU work is done. CPU runs at 0.2 img/s. On the GPU, expect tens of img/s; measure it.
 - **Out of reach here:** the field video test set (D-018) needs the user's walks.
 
 ## Journal

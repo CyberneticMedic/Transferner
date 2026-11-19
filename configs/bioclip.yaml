@@ -24,6 +24,7 @@ heads:
     train_ext: true             # + out-of-region recent photos of rare species (D-026)
     shrink_k: 0                 # off. 30 = rare rows -> normalize(a*W + (1-a)*text), a = n/(n+k): rare species
     shrink_below: 100           #   +20 pt but common -0.5 pt top-1 and mosses -5 pt (D-026); a product choice
+    w_field: 8                  # loss weight of field photos (regional train + train_ext) vs ToL (D-030)
   lora:                         # experimental only (D-010)
     enabled: false
     r: 16

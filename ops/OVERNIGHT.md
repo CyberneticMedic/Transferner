@@ -62,30 +62,39 @@ Notes on the token-merging grid:
 
 ## Plan
 ### Phase A: efficiency (priority)
-- [ ] **A1 (queued):** references and weight-only / dynamic quantization:
+- [ ] **A1 (round 2: 4 of 6 done):**
+  - Done: `fp16` 84.95, `w8a16` 84.94, `w8a8dyn` 84.96, `w4a16_g128` 84.37 (−0.58 pt, 315 MB).
+  - Queued after A3's ToMe and resolution jobs: `w4a16_g32` and `w4a8dyn_g32`.
+  - References and weight-only / dynamic quantization:
   - `fp16`
   - `w8a16`
   - `w8a8dyn` (8da8w, XNNPACK-style)
   - `w4a16_g128`, `w4a16_g32`
   - `w4a8dyn_g32` (8da4w)
-- [ ] **A2 (queued): partial static W8A8 for the NPU.**
-  - Queued: `quant.sensitivity --smooth 0.5`, then `quant.partial_search --smooth 0.5`.
-  - If no k meets the target on val, try these in order: smooth 0.8, then `--a-pct` 99.9 or 100, then larger k (up to all 128 layers is just W8A16).
-  - **Gate:** once a partial W8A8 meets the target on test, quantization is done.
-  - Then add D-027 recording the k, which layers stay FP16, and the test numbers.
+- [x] **A2: partial static W8A8 for the NPU.** Done in round 2, recorded as **D-028**.
+  - k = 0 passed: all 128 linears are static W8A8 with SmoothQuant 0.5. Test 83.52% against a threshold of 83.25% (FP16: 84.95%).
+  - The margin is thin and contact DMR rises from 5.46% to 6.20%.
+  - Queued, val-only: `w8a8p_s0.5_k1` and `w8a8p_s0.5_k4`, which keep `b1.fc1` (or the top 4 layers) in FP16. `b1.fc1` is 3.3× more sensitive than any other layer. This shows how much one fallback layer buys. Run k1 on test only if it recovers ≥ 0.5 pt on val and the GPU has time.
+  - The calibration sampler is seeded from commit 9650bac on, so earlier static runs carry about ±0.15 pt of calibration noise.
 - [ ] **A3 (queued): structural variants.**
   - `tome_r2`, `tome_r4`, `tome_r6`
   - `res196`, `res168`
   - `base_subset` (retrained head on 40 images per species), then `drop2` and `drop4`. A dropped-block variant must be compared with `base_subset`, not with the production head.
 - [ ] **A4: combinations along the Pareto front.** At most about 6 jobs, chosen from A1–A3. Example: the accepted partial W8A8 with the best token-merging r or resolution, or W4A16 with token merging. For a static combination, recompute sensitivity only if the structure changes a lot.
+  - **GPU time is the constraint (round 2):** the queue runs until about 09:10, and the runner starts nothing after 10:00. Screen combos with `--val-only` (about 5 min each, 27K images), then run test (about 20–36 min) only for the 1–2 picks.
+  - **Insert combos ahead of `base_subset`/`drop2`/`drop4`.** Those are the lowest-value jobs (−6%/−12% FLOPs, need a retrained head), so `drop4` is the first job to cut if time runs out.
+  - Weight-only and dynamic INT8 are lossless (w8a16 −0.01 pt, w8a8dyn +0.01 pt), so a `w8a16 + tome_rX` combo will land within noise of `tome_rX`. Prefer combos whose interaction is uncertain: static W8A8 + tome/res, and W4 + tome/res.
 - [ ] **A5: report.**
   - [x] Add `src/transferner/eval/efficiency_report.py`, producing `results/EFFICIENCY.md` (a table of every variant: top-1/top-5 on test, Δ vs FP16, val, weight MB, GFLOPs) and `results/figures/efficiency_pareto.png` (test top-1 against GFLOPs and against weight MB). Load the `dataviz` skill before writing the chart code. *(Round 1: written and checked on a synthetic table. It runs on the CPU and also reports DMR per variant from the saved embeddings. Rerun it whenever rows land: `python -m transferner.eval.efficiency_report`.)*
   - Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile.
-- [ ] **A6 (optional, after A5): export feasibility on x86.**
+- [x] **A6 (optional, after A5): export feasibility on x86.** *(LiteRT part done in round 2, recorded as D-029. ExecuTorch was not tried: it pins torch 2.15 and would need its own venv.)*
   - Set up `.venv-export` (CPU torch) with ai-edge-torch and/or executorch.
   - Export the FP16 and W8 variants and check outputs against PyTorch on 64 images.
   - Record x86 latency only as a proxy.
   - Skip if the toolchain fights back for more than one round, and write down why.
+  - **Round 2 (started early, since the CPU was idle):** `.venv-export` has torch 2.14.1+cpu, litert-torch 0.10.0, ai-edge-litert 2.3.0 and open_clip 4.2.2. ExecuTorch 1.6 pins torch 2.15, which conflicts with litert-torch (< 2.15), so it would need its own venv (`.venv-et`).
+  - `export/litert.py --recipe {fp32,fp16,w8,w8dyn}` converts the image tower, checks it against PyTorch FP32 on 64 regional val photos (cosine, top-1 agreement under the production head) and times it on x86. Results go to `results/tables/export_check.csv`.
+  - Run it with `cd /tmp && PYTHONPATH=~/Transferner/src ~/Transferner/.venv-export/bin/python -m transferner.export.litert --recipe w8`. It's CPU only, with a memory guard at 16 GB free.
 
 ### Phase B: mosses (when A2 is done; mostly CPU on cached embeddings)
 - **Baseline (test, current probe):** Bryophyta 68.5% top-1 across 140 species; Marchantiophyta 67.8%; vascular plants 85.4%.
@@ -103,9 +112,18 @@ Notes on the token-merging grid:
   - **Unused ToL images:** 10,309 Bryophyta images (109 species) and 4,294 liverwort images (42 species) sit in `unused`. These are species already at the cap.
   - **Zero-shot share:** the probe adds only +3.3 pt (Bryophyta) and +0.6 pt (liverworts) over zero-shot on test. Liverworts with < 20 training images fall from 34.2% zero-shot to 10.1% with the probe (the D-026 effect).
   - **Selection slices:** regional val has only 149 Bryophyta and 93 liverwort photos (17 species). `val_ext` has 1,178 and 787, so `val_ext_bryo` is the main selection slice.
-- [ ] **Experiments (queued after A1):** `linear_probe --w-bryo {2,4}`, `--w-field 3`, `--w-field 3 --w-bryo 2`, plus a `phaseB_base` re-run for the bryophyte-slice numbers. Each writes to `artifacts/phaseB/*.pt` (never `--out` the production `artifacts/probe.pt`), and the rows land in `results/tables/bioclip_probe.csv` (columns `probe_val_ext_bryo_top1`, `probe_val_regional_bryo_top1`, `probe_val_regional_top1`). Accept a weight only if `val_ext_bryo` improves and regional-val top-1 drops ≤ 0.1 pt (D-026 rule). Next candidates:
+- [x] **Experiments, round 2, recorded as D-030:**
+  - **Adopted: field-photo loss weight w = 8** (`configs/bioclip.yaml: w_field`). Test: overall 84.96 → 85.32, mosses 68.5 → 69.3, liverworts 67.8 → 69.4.
+  - Bryophyte weights and the unused ToL moss images did not pass.
+  - Production retrain, calibrate and evaluate were queued at the front. The old head is kept as `artifacts/probe_d026.pt`.
+  - **Next moss lever:** recent field photos for all bryophytes (see below).
+  - Original plan text follows.
+- **Experiments (queued after A1):** `linear_probe --w-bryo {2,4}`, `--w-field 3`, `--w-field 3 --w-bryo 2`, plus a `phaseB_base` re-run for the bryophyte-slice numbers. Each writes to `artifacts/phaseB/*.pt` (never `--out` the production `artifacts/probe.pt`), and the rows land in `results/tables/bioclip_probe.csv` (columns `probe_val_ext_bryo_top1`, `probe_val_regional_bryo_top1`, `probe_val_regional_top1`). Accept a weight only if `val_ext_bryo` improves and regional-val top-1 drops ≤ 0.1 pt (D-026 rule). Next candidates:
   - Embed the 14.6K unused bryophyte ToL images. This needs a phylum filter in `train/embed_images.py`, because `--splits unused` would embed all 383K images (about 35 GPU-minutes).
   - Field-photo augmentation.
+  - **Round 2:** the 7 Phase B jobs were moved to the front of the queue. They're linear probes of about 40 s each, so the whole set takes about 10 min.
+  - **Production head and the efficiency sweep (solved in round 2):** the sweep's production-head rows now always use the frozen D-026 head in `artifacts/efficiency/_head/` (`efficiency.prod_head_dir`). Replacing `artifacts/probe.pt` no longer touches the sweep.
+  - **Next candidate (not tonight):** recent out-of-region field photos for **all** bryophytes, in the style of D-026 but train-only. This needs a `train_only` flag in `splits.py` so `val_ext` stays fixed, and it rewrites the manifests, so do it only when no efficiency job is reading them.
 
 ### Phase C: trait table (CPU and network; run it during long GPU jobs)
 - **What to build:** a per-(species, part) table of edible, utility, toxic and conditional, with contact- and ingestion-toxicity flags and a source citation (URL) on every row (D-004/D-005).
@@ -125,6 +143,12 @@ Notes on the token-merging grid:
 - **Round 1 status:**
   - [x] NC State toolbox: species pages plus a genus-page fallback. 2,714 rows over 872 species, with source pages covering 68% of test images. Re-run: `python -m transferner.data.traits_ncsu fetch && ... parse && python -m transferner.data.traits_build`. Fetching resumes from the cache.
   - [ ] Second source: USDA PLANTS (504 all night, retry it) or Clemson HGIC (robots allows it; factsheets are unstructured). Implement the more-toxic-wins merge when it lands.
+    - **Round 2 (04:50), all dead ends:**
+      - USDA PLANTS still returns 504 for the whole site, robots.txt and the API included.
+      - The Canadian Poisonous Plants Information System (cbif.gc.ca) fails TLS hostname verification. It was skipped, not bypassed.
+      - California Poison Control has dropped its coded plant list; only a handful of narrative entries remain.
+      - Clemson HGIC search turns up no toxicity factsheets.
+    - **Decided:** don't scrape narrative pages into a safety table. Retry USDA once per round, and stop there.
   - [ ] Three look-alike *Vitis* (*cinerea*, *palmata*, *rupestris*) have no page at all. Bryophytes have essentially no trait coverage (2 of 521).
 
 ### Phase D: live detector (GPU-heavy; only after Phase A's GPU work is finished)
@@ -172,3 +196,39 @@ Notes on the token-merging grid:
     3. Read the `phaseB_*` rows in `results/tables/bioclip_probe.csv` and apply the D-026 rule on `probe_val_ext_bryo_top1` and `probe_val_regional_top1`. Only if a variant passes, retrain the production probe with it and record a decision.
     4. Plan A4 once A3 results land.
   - **Careful:** `linear_probe` defaults to `--out artifacts/probe.pt`, which is production. Every experiment needs its own `--out`.
+- **2026-11-19, round 2 (04:44–05:45):**
+  - **Found:**
+    - All jobs since round 1 finished with rc 0: sensitivity, partial search, `w8a8dyn`, `w4a16_g128` and the Phase B probes.
+    - **A2 passed at k = 0** (D-028): full static W8A8 with SmoothQuant 0.5. Test 83.52% against a threshold of 83.25%. The margin is thin, and contact DMR rises from 5.46% to 6.20%.
+    - `w8a8dyn` (84.96%) and `w8a16` (84.94%) are lossless. `w4a16_g128` scores 84.37% at 315 MB.
+    - Calibration was unseeded, so the same variant moved ±0.15 pt between runs. It's seeded now (commit 9650bac).
+    - **k = 1** (`b1.fc1` kept in FP16) scores 88.79% on val, which buys nothing, so k = 4 was dropped.
+  - **Phase B** (D-030): the field-photo weight helps; bryophyte weights and unused ToL mosses don't.
+    - **Adopted `w_field: 8`.** Test: 84.96 → 85.32, mosses 68.5 → 69.3, liverworts 67.8 → 69.4.
+    - Selection used val only: max regional val with ToL `val_rare` loss ≤ 0.1 pt. The disclosure is in D-030: test was printed for all nine runs.
+    - The production retrain, `train.calibrate` and `eval.evaluate` are queued at the front. The old head is kept as `artifacts/probe_d026.pt`.
+  - **Efficiency sweep head:** decoupled from production. Every production-head efficiency row is scored with the frozen D-026 head in `artifacts/efficiency/_head/`.
+  - **A6 export** (D-029), CPU only, in `.venv-export` (litert-torch 0.10, torch 2.14.1 CPU, jax < 0.12.1):
+    - FP16, W8 and W8 + dynamic INT8 convert and match PyTorch (cosine ≥ 0.998).
+    - **The NPU graph must quantize only the linears.** The stock PT2E full-INT8 recipe quantizes residual adds and breaks the model (cosine 0.25). Linear-only static INT8 with SmoothQuant 0.5 gives cosine 0.975 and 64/64 agreement.
+    - Peak conversion RSS is 14–17 GB, so never run two conversions at once.
+  - **Phase C:** no second source exists yet.
+    - USDA still returns 504.
+    - cbif.gc.ca fails TLS verification; it was skipped, not bypassed.
+    - CalPoison and Clemson have no structured lists.
+    - **Decided:** don't scrape narrative pages into a safety table. Retry USDA once per round.
+  - **Queue changes:**
+    - Phase B went first, followed by the field-weight sweep (2–32) and `field3+unused`.
+    - k1 ran; k4 was replaced by `w8a8_s0.5_p99.9` and `_p99.5` (val-only). The PT2E histogram observer reaches cosine 0.974 against FP32, where the simulation's 99.99-percentile ranges reach 0.944, so tighter clipping may recover the margin.
+    - A3 was reordered: ToMe and resolution first, then `w4a16_g32` and `w4a8dyn_g32`, then `base_subset`, `drop2`, `drop4`.
+    - The queue should run until about 09:20.
+  - **Next round should first:**
+    1. Check that `linear_probe --tag d030_w_field8`, `train.calibrate` and `eval.evaluate` succeeded. Compare the new `eval.csv` probe row (top-1 about 85.3%, DMR) with D-026's.
+    2. **Read `w8a8_s0.5_p99.9` and `_p99.5`** (val-only rows).
+       - If either beats k0's regional val (88.75–88.90%) by ≥ 0.3 pt, queue it on test **ahead of the drop jobs**: `eval.efficiency --name w8a8_s0.5_pXX --w-bits 8 --a-bits 8 --a-mode static --smooth 0.5 --a-pct XX` without `--val-only`. This takes about 36 min. Reuse the same name: calibration is seeded, and the full row supersedes the val-only row in the report.
+       - Then update D-028's recommended calibration.
+    3. Rerun `efficiency_report` as the ToMe and resolution rows land, then plan A4 (val-only screens ahead of `base_subset`, `drop2`, `drop4`; cut `drop4` first).
+    4. CPU work while the GPU is busy:
+       - Retry USDA once.
+       - Optionally, an x86 check of the deployable INT8 graph on more images: `export/litert.py --recipe int8static --smooth 0.5 --linear-only --images 256` takes about 6 min plus about 1 s per image.
+       - Or start Phase D's `pseudo_boxes.py`, CPU-tested on a few images.

@@ -33,12 +33,21 @@ class RunLog:
         """Append one row (with run_id) to results/tables/<table>.csv."""
         path = REPO / "results" / "tables" / f"{table}.csv"
         row = {"run_id": self.run_id, **row}
-        new = not path.exists()
-        with open(path, "a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(row))
-            if new:
+        old_rows, fields, rewrite = [], list(row), not path.exists()
+        if path.exists():
+            with open(path, newline="") as f:
+                r = csv.DictReader(f)
+                old_fields = r.fieldnames or []
+                fields = old_fields + [k for k in row if k not in old_fields]
+                if fields != old_fields:          # new columns: rewrite with the widened header
+                    old_rows, rewrite = list(r), True
+        if rewrite:
+            with open(path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fields)
                 w.writeheader()
-            w.writerow(row)
+                w.writerows(old_rows)
+        with open(path, "a", newline="") as f:
+            csv.DictWriter(f, fieldnames=fields).writerow(row)
 
     def close(self) -> None:
         self._f.close()

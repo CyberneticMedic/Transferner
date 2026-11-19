@@ -15,6 +15,9 @@ NC State Extension Gardener Plant Toolbox
                (no part tag -> part `unspecified`), conditions = the page's Edibility text.
   conditional  the same edible rows when the page ALSO has a poison section: the source
                itself says both, so the edible claim is downgraded (more toxic wins).
+  genus pages  a species with no page of its own takes its genus page (level=genus): toxic
+               rows apply as stated (conservative), edible rows always become conditional,
+               and notes say the species was not individually assessed.
 Absence of a toxic row never means "safe": coverage is reported, not assumed.
 
 Writes data/traits/species_traits.csv and results/tables/trait_coverage.csv, and prints
@@ -55,7 +58,9 @@ def ncsu_rows(f: pd.DataFrame, common: dict[int, str]) -> list[dict]:
         base = {"scientific_name": r.scientific_name, "gbif_taxon_key": int(r.gbif_taxon_key),
                 "common_name": cn, "source_name": SRC_NCSU,
                 "source_url": r.url, "accessed": r.accessed, "curator": CURATOR_NCSU}
-        syn = f"page filed under synonym {r.page_name}; " if r.page_name != r.scientific_name else ""
+        genus = getattr(r, "level", "species") == "genus"
+        syn = (f"genus-level page ({r.page_name}), species not individually assessed; " if genus else
+               f"page filed under synonym {r.page_name}; " if r.page_name != r.scientific_name else "")
         toxic = bool(r.has_poison_section)
         contact = int(r.contact_dermatitis == "Yes")
         if toxic:
@@ -70,9 +75,9 @@ def ncsu_rows(f: pd.DataFrame, common: dict[int, str]) -> list[dict]:
         edible_parts = sorted({EDIBLE_TAG[t.lower()] for t in r.tags if t.lower() in EDIBLE_TAG})
         generic = any(t.lower() in EDIBLE_GENERIC for t in r.tags)
         if "Edible" in list(r.plant_type) or edible_parts or generic:
-            cat = "conditional" if toxic else "edible"
+            cat = "conditional" if toxic or genus else "edible"
             note = syn + ("source also lists this plant as poisonous to humans; edible use only as the source "
-                          "describes" if toxic else "")
+                          "describes" if toxic else "edible claim made for the genus" if genus else "")
             for p in edible_parts or ["unspecified"]:
                 rows.append({**base, "part": p, "category": cat, "contact_toxic": contact if toxic else 0,
                              "ingestion_toxic": 0, "ingestion_severity": "", "conditions": _clip(r.edibility, 400),
@@ -93,6 +98,7 @@ def coverage(traits: pd.DataFrame, sp: pd.DataFrame, pages: pd.DataFrame) -> pd.
     df = sp.set_index("gbif_taxon_key")[["scientific_name", "phylum", "n_regional", "n_test", "must_include",
                                           "is_lookalike"]].join(flags)
     df["has_source_page"] = df.index.isin(pages.gbif_taxon_key)
+    df["has_species_page"] = df.index.isin(pages.loc[pages.get("level", "species") == "species", "gbif_taxon_key"])
     df[flags.columns] = df[flags.columns].fillna(False).astype(bool)
     sets = {"all": df.index == df.index, "must_include": df.must_include, "lookalike": df.is_lookalike,
             "top500_regional": df.n_regional.rank(ascending=False, method="first") <= 500}
@@ -101,7 +107,8 @@ def coverage(traits: pd.DataFrame, sp: pd.DataFrame, pages: pd.DataFrame) -> pd.
     out = []
     for name, m in sets.items():
         d = df[m]
-        out.append({"set": name, "species": len(d), "with_page": int(d.has_source_page.sum()),
+        out.append({"set": name, "species": len(d), "with_species_page": int(d.has_species_page.sum()),
+                    "with_page": int(d.has_source_page.sum()),
                     "with_rows": int(d.any_row.sum()), "toxic": int(d.toxic.sum()),
                     "contact_toxic": int(d.contact_toxic.sum()), "ingestion_toxic": int(d.ingestion_toxic.sum()),
                     "edible": int(d.edible.sum()), "conditional": int(d.conditional.sum()),

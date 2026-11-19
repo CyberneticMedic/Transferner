@@ -1,0 +1,2 @@
+run_id,name,res,tome_r,drop,w_bits,w_group,a_bits,a_mode,a_pct,smooth,fp16_k,head,limit,gflops,gpu_img_s,weight_mb,val_regional_top1,val_regional_top5,val_ext_top1,val_ext_top5,test_top1,test_top5,test_macro_recall,test_ece,test_rare_top1,minutes,note
+20261119-025402_eff_fp16,fp16,224,0,0,16,0,16,dynamic,99.99,0.0,0,production,0,334.59,188.362,1205.591,0.9002555031446541,0.9773977987421384,0.48893838158871566,0.8270230141054195,0.8494818506144176,0.9645280027181607,0.7808619623605311,0.005317815476157749,0.579760579064588,19.0,

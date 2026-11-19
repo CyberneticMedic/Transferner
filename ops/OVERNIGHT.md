@@ -79,7 +79,7 @@ Notes on the token-merging grid:
   - `base_subset` (retrained head on 40 images per species), then `drop2` and `drop4`. A dropped-block variant must be compared with `base_subset`, not with the production head.
 - [ ] **A4: combinations along the Pareto front.** At most about 6 jobs, chosen from A1–A3. Example: the accepted partial W8A8 with the best token-merging r or resolution, or W4A16 with token merging. For a static combination, recompute sensitivity only if the structure changes a lot.
 - [ ] **A5: report.**
-  - Add `src/transferner/eval/efficiency_report.py`, producing `results/EFFICIENCY.md` (a table of every variant: top-1/top-5 on test, Δ vs FP16, val, weight MB, GFLOPs) and `results/figures/efficiency_pareto.png` (test top-1 against GFLOPs and against weight MB). Load the `dataviz` skill before writing the chart code.
+  - [x] Add `src/transferner/eval/efficiency_report.py`, producing `results/EFFICIENCY.md` (a table of every variant: top-1/top-5 on test, Δ vs FP16, val, weight MB, GFLOPs) and `results/figures/efficiency_pareto.png` (test top-1 against GFLOPs and against weight MB). Load the `dataviz` skill before writing the chart code. *(Round 1: written and checked on a synthetic table. It runs on the CPU and also reports DMR per variant from the saved embeddings. Rerun it whenever rows land: `python -m transferner.eval.efficiency_report`.)*
   - Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile.
 - [ ] **A6 (optional, after A5): export feasibility on x86.**
   - Set up `.venv-export` (CPU torch) with ai-edge-torch and/or executorch.
@@ -96,6 +96,16 @@ Notes on the token-merging grid:
   - How many ToL moss images are sitting in split `unused` (the per-species cap)? Those are not embedded yet; embedding them is a GPU job.
   - How good is the text init (the zero-shot share)?
 - **Fix only what val supports:** select on the bryophyte slices of val and `val_ext`, under the D-026 rule.
+- [x] **Diagnosis (round 1, CPU, `python -m transferner.eval.moss_diagnosis` → `results/tables/moss_diagnosis*.csv`):**
+  - **Errors are coarse, not congeners.** Of the probe's test errors, only 42% (Bryophyta) and 40% (liverworts) are within the genus, against 64% for vascular plants. 41% and 31% go to another family in the same phylum (vascular: 22%), and 11% and 19% go to another phylum (vascular: 0.5%). Genus top-1 is 81.7% and 80.7%, against 94.8%.
+  - **Not just image counts.** Species with ≥ 400 training images reach 73.2% (Bryophyta) against 87.8% (vascular). Liverworts with ≥ 400 reach 85.3%. Median training images per species are 168 (Bryophyta), 108 (liverworts) and 415 (vascular).
+  - **The training mix is almost all ToL:** 99.1% and 98.7%, with only 0.9% and 1.3% regional field photos (vascular: 7.6%). Specimens make up 14.3% and 16.3% of training (vascular: 2.7%).
+  - **Unused ToL images:** 10,309 Bryophyta images (109 species) and 4,294 liverwort images (42 species) sit in `unused`. These are species already at the cap.
+  - **Zero-shot share:** the probe adds only +3.3 pt (Bryophyta) and +0.6 pt (liverworts) over zero-shot on test. Liverworts with < 20 training images fall from 34.2% zero-shot to 10.1% with the probe (the D-026 effect).
+  - **Selection slices:** regional val has only 149 Bryophyta and 93 liverwort photos (17 species). `val_ext` has 1,178 and 787, so `val_ext_bryo` is the main selection slice.
+- [ ] **Experiments (queued after A1):** `linear_probe --w-bryo {2,4}`, `--w-field 3`, `--w-field 3 --w-bryo 2`, plus a `phaseB_base` re-run for the bryophyte-slice numbers. Each writes to `artifacts/phaseB/*.pt` (never `--out` the production `artifacts/probe.pt`), and the rows land in `results/tables/bioclip_probe.csv` (columns `probe_val_ext_bryo_top1`, `probe_val_regional_bryo_top1`, `probe_val_regional_top1`). Accept a weight only if `val_ext_bryo` improves and regional-val top-1 drops ≤ 0.1 pt (D-026 rule). Next candidates:
+  - Embed the 14.6K unused bryophyte ToL images. This needs a phylum filter in `train/embed_images.py`, because `--splits unused` would embed all 383K images (about 35 GPU-minutes).
+  - Field-photo augmentation.
 
 ### Phase C: trait table (CPU and network; run it during long GPU jobs)
 - **What to build:** a per-(species, part) table of edible, utility, toxic and conditional, with contact- and ingestion-toxicity flags and a source citation (URL) on every row (D-004/D-005).
@@ -109,9 +119,13 @@ Notes on the token-merging grid:
 - **Where it goes:** check `configs/data.yaml` for the path `species.traits` expects.
 - **Order of work:** must-include, look-alike and `is_toxic` species first, then by `n_regional`.
 - **Afterwards:**
-  - Write a coverage report.
-  - Add DMR (dangerous misidentification rate) to `eval/metrics.py` and `eval/evaluate.py`.
-  - Add a decision entry.
+  - [x] Write a coverage report: `results/tables/trait_coverage.csv`, written by `traits_build`.
+  - [x] Add DMR (dangerous misidentification rate) to `eval/metrics.py` and `eval/evaluate.py`. It is also in `efficiency_report`.
+  - [x] Add a decision entry: D-027.
+- **Round 1 status:**
+  - [x] NC State toolbox: species pages plus a genus-page fallback. 2,714 rows over 872 species, with source pages covering 68% of test images. Re-run: `python -m transferner.data.traits_ncsu fetch && ... parse && python -m transferner.data.traits_build`. Fetching resumes from the cache.
+  - [ ] Second source: USDA PLANTS (504 all night, retry it) or Clemson HGIC (robots allows it; factsheets are unstructured). Implement the more-toxic-wins merge when it lands.
+  - [ ] Three look-alike *Vitis* (*cinerea*, *palmata*, *rupestris*) have no page at all. Bryophytes have essentially no trait coverage (2 of 521).
 
 ### Phase D: live detector (GPU-heavy; only after Phase A's GPU work is finished)
 - **Design (D-002/D-012):** SSDLite on MNv4-Conv-Medium, with boxes pseudo-labelled by OWLv2. The stubs are `src/transferner/data/pseudo_boxes.py` and `train/train_detector.py`.
@@ -120,6 +134,7 @@ Notes on the token-merging grid:
   2. Train.
   3. Report detection quality on a held-out subset.
 - **Licences:** verify them. OWLv2 and timm's MNv4 weights should be Apache-2.0.
+- **Round 1 assessment:** the queue (A1, A2, B, A3) runs until about 09:00, and A4 comes after it, so Phase D's GPU work will not fit before the 10:00 stop tonight. A later round with spare CPU time may write `pseudo_boxes.py` and test it on a few images on the CPU. Both stubs are still `NotImplementedError`. `transformers` 5.23 and `timm` 1.0.31 are already in `.venv`.
 - **Packages:** install missing ones such as `transformers` and `timm` into `.venv` with `uv`.
 - **Out of reach here:** the field video test set (D-018) needs the user's walks.
 

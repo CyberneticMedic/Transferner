@@ -10,6 +10,8 @@ parts, contact dermatitis, edible plant type/tags), each with its page URL as th
 
 A species matches a page when its accepted name or one of its GBIF synonyms slugifies to a
 sitemap slug ("Phytolacca americana" -> phytolacca-americana). Cultivar pages are not used.
+Species with no page of their own fall back to their genus page (/plants/rubus/) when one
+exists; such rows are marked level=genus and traits_build treats them conservatively.
 traits_build turns the parsed fields into data/traits/species_traits.csv rows."""
 from __future__ import annotations
 
@@ -53,13 +55,13 @@ def targets() -> pd.DataFrame:
     rows = []
     for r in sp.itertuples():
         names = [r.scientific_name] + [s for s in r.synonyms if s]
-        for n in names:
-            if slug(n) in slugs:
-                rows.append({"class_idx": r.class_idx, "scientific_name": r.scientific_name,
-                             "gbif_taxon_key": r.gbif_taxon_key, "page_name": n, "slug": slug(n),
-                             "priority": int(r.must_include or r.is_lookalike or r.is_toxic),
-                             "n_regional": r.n_regional})
-                break
+        base = {"class_idx": r.class_idx, "scientific_name": r.scientific_name, "gbif_taxon_key": r.gbif_taxon_key,
+                "priority": int(r.must_include or r.is_lookalike or r.is_toxic), "n_regional": r.n_regional}
+        hit = next((n for n in names if slug(n) in slugs), None)
+        if hit:
+            rows.append({**base, "page_name": hit, "slug": slug(hit), "level": "species"})
+        elif isinstance(r.genus, str) and slug(r.genus) in slugs:
+            rows.append({**base, "page_name": r.genus, "slug": slug(r.genus), "level": "genus"})
     t = pd.DataFrame(rows)
     return t.sort_values(["priority", "n_regional"], ascending=False).reset_index(drop=True)
 
@@ -138,7 +140,7 @@ def parse() -> pd.DataFrame:
             continue
         f = parse_page(p.read_text())
         rows.append({"class_idx": r.class_idx, "scientific_name": r.scientific_name, "gbif_taxon_key": r.gbif_taxon_key,
-                     "page_name": r.page_name, "url": f"{BASE}/plants/{r.slug}/",
+                     "page_name": r.page_name, "level": r.level, "url": f"{BASE}/plants/{r.slug}/",
                      "accessed": date.fromtimestamp(p.stat().st_mtime).isoformat(), **f})
     df = pd.DataFrame(rows)
     df.to_parquet(d / "ncsu_fields.parquet", index=False)

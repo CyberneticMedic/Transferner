@@ -13,7 +13,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from ..eval.efficiency import head_logits, hsort, loader
+from ..eval.efficiency import head_logits, hsort, loader, prod_head_dir
 from ..models import bioclip
 from ..models.efficient import EfficientVisual, Variant, calibrate, fq_weight
 from ..utils.config import RESULTS, data_root
@@ -54,7 +54,7 @@ def main() -> None:
         calibrate(ev, calib, "calib_channel")
         ev.smooth(args.smooth)
     calibrate(ev, calib, "calib_range")
-    fn, _ = head_logits(root, root / "artifacts")
+    fn, _ = head_logits(root, prod_head_dir(root))
     ev.q.active = set()                                   # nothing quantized: FP16 reference
     ref = embed(ev, evalb)
     ref_pred = fn(ref).argmax(-1)

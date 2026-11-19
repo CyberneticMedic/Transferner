@@ -50,3 +50,24 @@ Newest at the bottom. Format: ID · date · decision · why.
   - **Sensitivity (`results/tables/quant_sensitivity.csv`):** quantizing one layer at a time on 1,024 regional val photos, `b1.fc1` dominates. Its cosine distance is 0.0179, which is 3.3× the next layer (`b30.qkv`, 0.0055), and on its own it drops top-1 from 90.4% to 89.2%, about as much as quantizing the whole model does on full val.
   - **Margin caveat:** the test margin is only 0.27 pt. The simulation quantizes linear inputs only; a real NPU compiler may also quantize attention matmuls, softmax or LayerNorm, and its calibration differs. The NPU number therefore has to be measured on the phone. Tonight's fallback check is val-only runs with `b1.fc1` (k = 1) and the top four layers (k = 4) kept in FP16 (`w8a8p_s0.5_k1/k4`; on the device that would be FP16 or 16-bit activations for those layers), which tells the app how much margin one fallback layer buys.
   - **Status:** quantization is done per the OVERNIGHT.md gate. Work moves on to structure (A3), combinations (A4) and the per-runtime report (A5).
+- **D-029 · 2026-11-19 · Export (A6, x86 feasibility): the image tower converts to LiteRT, and the NPU graph must quantize only the block linears.**
+  - **Toolchain:** litert-torch 0.10.0, torch 2.14.1+cpu and ai-edge-litert 2.3.0 in `.venv-export` (`configs/export-constraints.txt`). jax must stay below 0.12.1: jax 0.12.1 (2026-11-18) lowers GELU's erf with `vhlo.fma`, which the converter's StableHLO 1.19 serializer rejects. ExecuTorch 1.6 pins torch 2.15 and would need its own venv; it wasn't tried.
+  - **Check** (`export/litert.py`, `results/tables/export_check.csv`): image tower → normalized embedding, compared with PyTorch FP32 on 64 regional val photos (cosine; top-1 under the production head). Latency is single-image x86 XNNPACK with 8 threads.
+
+    | Recipe | Size (MB) | Cosine vs FP32 | Top-1 agreement | x86 latency |
+    |---|---|---|---|---|
+    | FP16 | 1,208 | 1.0000 | 64/64 | 322 ms |
+    | W8 weight-only | 610 | 0.9997 | 64/64 | 325 ms |
+    | W8 + dynamic INT8 activations | 610 | 0.998 | 63/64 | 110 ms |
+    | Static INT8, linears only, SmoothQuant 0.5 (D-028 scope), 32 calibration images | 620 | 0.975 | 64/64 | 126 ms |
+
+    The PT2E graph of the static INT8 recipe scores 0.974 before conversion, so the converter is faithful.
+  - **Do not use the default full-INT8 recipe:** the stock PT2E static recipe also quantizes the residual `add`, `mul` and `cat`, and it destroys the embedding: cosine 0.25 with 0/64 agreement, and 0.245 with SmoothQuant. Per-tensor INT8 cannot hold ViT-H's residual stream.
+  - **Decided:** the NPU graph quantizes the 128 block linears (weights per channel, activations static per tensor), and residual adds, LayerNorm, softmax, GELU and attention stay float. This is exactly the D-028 simulation, so D-028's accuracy numbers apply to this graph.
+  - **Conversion needs memory:** it peaks at 14–17 GB RSS, because the FP32 module (> 2 GB) is serialized once before quantization. FP32 itself isn't a shipping format; FP16 at 1.2 GB fits in one flatbuffer.
+  - **Proxy only; these need the phone:**
+    - Tensor G4 latency on the GPU delegate and the NPU.
+    - Peak memory.
+    - Whether the NPU compiler accepts INT8 linears mixed with float residual ops, or splits the graph into many partitions or CPU fallbacks.
+    - On-device accuracy.
+  - **On x86 XNNPACK,** weight-only W8 runs at FP16 speed (it saves memory only), and dynamic INT8 is 3× faster.

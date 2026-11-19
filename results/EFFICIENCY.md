@@ -9,6 +9,7 @@ Latency, memory and NPU compile need the phone; GPU img/s here is a ROCm proxy f
 | variant | family | ref | test top-1 | Δ pt | rel | test top-5 | val reg top-1 | val_ext top-1 | rare top-1 | agree ref | McNemar p | DMR contact | DMR ingest | weights MB | GFLOPs | GPU img/s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | fp16 | reference | – | 84.95 | – | – | 96.45 | 90.03 | 48.89 | 57.98 | – | – | 5.46 | 4.41 | 1206 | 334.6 | 188 |
+| w4a16_g128 | quantization | fp16 | 84.37 | -0.58 | 0.9932 | 96.27 | 89.46 | 48.08 | 57.20 | 0.9473 | 7.3e-40 | 5.54 | 4.61 | 315 | 334.6 | – |
 | w8a16 | quantization | fp16 | 84.94 | -0.01 | 0.9999 | 96.45 | 90.04 | 48.82 | 58.00 | 0.9946 | 7.4e-01 | 5.44 | 4.36 | 606 | 334.6 | – |
 | w8a8dyn | quantization | fp16 | 84.96 | +0.01 | 1.0001 | 96.44 | 89.97 | 49.07 | 58.09 | 0.9800 | 6.9e-01 | 5.41 | 4.36 | 606 | 334.6 | – |
 | w8a8p_s0.5_k0 | quantization | fp16 | 83.52 | -1.43 | 0.9832 | 96.12 | 88.75 | 49.95 | 58.12 | 0.9031 | 2.9e-123 | 6.20 | 4.68 | 606 | 334.6 | – |

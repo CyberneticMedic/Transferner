@@ -39,6 +39,14 @@ from . import metrics as M
 REF = "fp16"
 
 
+def prod_head_dir(root):
+    """Head for every production-head variant: a frozen copy of artifacts/probe.pt + temperature.txt
+    taken before the sweep's first job (artifacts/efficiency/_head/), so adopting a new production
+    probe mid-sweep does not make the rows incomparable. Falls back to artifacts/."""
+    d = root / "artifacts/efficiency/_head"
+    return d if (d / "probe.pt").exists() else root / "artifacts"
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
@@ -192,10 +200,10 @@ def run(args) -> dict:
                                  "--out", f"{rel}/temperature.txt"], check=True)
         head_dir = out_dir
     else:
-        head_dir = root / "artifacts"
+        head_dir = prod_head_dir(root)
         (out_dir / "temperature.txt").write_text((head_dir / "temperature.txt").read_text())
     fn, T = head_logits(root, head_dir)
-    prod_fn, prod_T = head_logits(root, root / "artifacts")
+    prod_fn, prod_T = head_logits(root, prod_head_dir(root))
 
     sp = pd.read_parquet(root / "manifests/species.parquet").set_index("class_idx")
     row = {"name": args.name, **{k: getattr(v, k) for k in ("res", "tome_r", "drop", "w_bits", "w_group",

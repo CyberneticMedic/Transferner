@@ -19,6 +19,7 @@ import torch
 
 from ..utils.config import RESULTS, data_root
 from . import metrics as M
+from .efficiency import prod_head_dir
 from .evaluate import trait_flags
 
 TARGET = 0.98          # OVERNIGHT.md acceptance: partial W8A8 test top-1 >= 0.98 x FP16
@@ -53,7 +54,7 @@ def dmr_for(name: str, head: str, tox: dict[str, np.ndarray]) -> dict:
     if not (d / "test.npy").exists():
         return {}
     torch.set_num_threads(8)
-    pr = torch.load((d if head == "retrained" else root / "artifacts") / "probe.pt", map_location="cpu")
+    pr = torch.load((d if head == "retrained" else prod_head_dir(root)) / "probe.pt", map_location="cpu")
     W, b, s = pr["W"].float(), pr["b"].float(), pr["scale"]
     e = np.load(d / "test.npy", mmap_mode="r")
     pred = np.concatenate([(s * torch.from_numpy(np.asarray(e[i:i + 16384], np.float32)) @ W.T + b).argmax(-1).numpy()

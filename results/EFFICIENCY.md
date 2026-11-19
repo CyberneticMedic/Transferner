@@ -27,5 +27,7 @@ Latency, memory and NPU compile need the phone; GPU img/s here is a ROCm proxy f
 |---|---|---|---|---|---|---|---|---|---|
 | w8a8p_s0.5_k1 | 88.79 | -1.23 | 0.9863 | 49.22 | 0.9324 | 0.9485 | 1 | 334.6 | A2-margin |
 | w8a8_s0.5_p99.9 | 59.93 | -30.10 | 0.6657 | 24.28 | 0.6057 | 0.5853 | 0 | 334.6 | A2-calibration |
+| w8a8_s0.5_p100_res196 | 88.25 | -1.77 | 0.9803 | 46.33 | 0.9243 | 0.9615 | 0 | 254.5 | A4-screen |
+| w8a8_s0.5_p100_tome2 | 89.23 | -0.80 | 0.9912 | 46.73 | 0.9534 | 0.9836 | 0 | 291.6 | A4-screen |
 
 ![Pareto](figures/efficiency_pareto.png)

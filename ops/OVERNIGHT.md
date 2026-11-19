@@ -87,7 +87,7 @@ Notes on the token-merging grid:
   - **GPU time is the constraint (round 2):** the queue runs until about 09:10, and the runner starts nothing after 10:00. Screen combos with `--val-only` (about 5 min each, 27K images), then run test (about 20–36 min) only for the 1–2 picks.
   - **Insert combos ahead of `base_subset`/`drop2`/`drop4`.** Those are the lowest-value jobs (−6%/−12% FLOPs, need a retrained head), so `drop4` is the first job to cut if time runs out.
   - Weight-only and dynamic INT8 are lossless (w8a16 −0.01 pt, w8a8dyn +0.01 pt), so a `w8a16 + tome_rX` combo will land within noise of `tome_rX`. Prefer combos whose interaction is uncertain: static W8A8 + tome/res, and W4 + tome/res.
-  - **Round 3 screens (val-only, queued after the p100 test):** `w8a8_s0.5_p100_res196` and `w8a8_s0.5_p100_tome2`. Compare each with its float structure's val (`res196` 88.25, `tome_r2` 89.23). If the static penalty on top of the structure is ≤ 0.2 pt val, the combo is additive and needs no test run; the report can cite the screen. Run test only for a combo that is a real candidate (see the round 3 journal for the time rule).
+  - **Round 3: screens done, both additive (round 3 journal); no combo test runs.** Original note: `w8a8_s0.5_p100_res196` and `w8a8_s0.5_p100_tome2`. Compare each with its float structure's val (`res196` 88.25, `tome_r2` 89.23). If the static penalty on top of the structure is ≤ 0.2 pt val, the combo is additive and needs no test run; the report can cite the screen. Run test only for a combo that is a real candidate (see the round 3 journal for the time rule).
 - [ ] **A5: report.**
   - [x] Add `src/transferner/eval/efficiency_report.py`, producing `results/EFFICIENCY.md` (a table of every variant: top-1/top-5 on test, Δ vs FP16, val, weight MB, GFLOPs) and `results/figures/efficiency_pareto.png` (test top-1 against GFLOPs and against weight MB). Load the `dataviz` skill before writing the chart code. *(Round 1: written and checked on a synthetic table. It runs on the CPU and also reports DMR per variant from the saved embeddings. Rerun it whenever rows land: `python -m transferner.eval.efficiency_report`.)*
   - [x] Add a decision entry recommending variants per runtime (LiteRT GPU, NPU, XNNPACK CPU), and state plainly what needs the phone: latency, memory and NPU compile. *(Round 3: **D-032**. GPU: W8A16, with W4A16 g32 as the memory fallback. NPU: static W8A8 per D-031. CPU: 8da8w. No structural cut by default. Still to add: `res210`, `drop2`/`drop4` and the 8da4w val number.)*
@@ -241,3 +241,38 @@ Notes on the token-merging grid:
        - Retry USDA once.
        - Optionally, an x86 check of the deployable INT8 graph on more images: `export/litert.py --recipe int8static --smooth 0.5 --linear-only --images 256` takes about 6 min plus about 1 s per image.
        - Or start Phase D's `pseudo_boxes.py`, CPU-tested on a few images.
+- **2026-11-19, round 3 (06:58–08:00):**
+  - **Found:**
+    - All jobs since round 2 finished with rc 0: `w8a8_s0.5_p100` (val-only), `tome_r2/r4/r6`, `res196`, `res168` and `w4a16_g32`.
+    - **Min/max activation ranges fix static W8A8** (`w8a8_s0.5_p100`, val-only): regional val 90.10%, against FP16's 90.03% and k0's 88.75–88.90%. Cosine to FP16 is 0.9955 (k0: 0.944). Clipping, not rounding, was the loss: ViT-H's outlier channels carry information.
+    - **Structure (A3, test, Δ vs FP16):** `tome_r2` −0.94 pt at −13% GFLOPs, `tome_r4` −2.71 (−26%), `tome_r6` −5.99 (−38%), `res196` −1.81 (−24%, and +31% GPU img/s, where ToMe gains little), `res168` −6.46 (−44%). Contact DMR rises faster than top-1 falls (`res196`: 5.46 → 6.40%).
+    - `w4a16_g32`: 84.52% (−0.43 pt) at 343 MB, against g128's 84.37% at 315 MB.
+  - **Export (A6), CPU:** `export/litert.py` gained `--act-observer minmax` and `--pt2e-only`. The real PT2E linear-only graph with SmoothQuant 0.5 (128 calibration and 128 check images) reaches cosine 0.9951 and 127/128 agreement with min/max, against 0.9746 and 125/128 with the default histogram observer. The simulation's gain carries over to the deployable graph.
+  - **Test of `w8a8_s0.5_p100` (queued at the front this round): 84.82%** (−0.12 pt, rel 0.9985; D-028: 83.52%). Contact and ingestion DMR are 5.56% and 4.42% (FP16 5.46% / 4.41%). Recorded as **D-031**, with a pointer in D-028. The NPU recipe is now full W8A8 over the linears with min/max ranges, nothing in FP16, at a 1.57 pt margin.
+  - **A5 decision written (D-032):**
+    - LiteRT GPU: W8A16, with W4A16 g32 when memory is tight.
+    - NPU: D-031.
+    - XNNPACK CPU: 8da8w.
+    - No structural cut by default, because a still has a 10 s budget. If one is ever needed, lower the resolution before using ToMe.
+    - D-032 lists what needs the phone.
+  - **Phase D (CPU):** wrote `data/pseudo_boxes.py`; licences for OWLv2 and MNv4 are Apache-2.0 (checked). On 64 images (one per genus), 25% fell back to full frame (mostly frame-filling mosses and dense herbs), images with boxes average 1.6, and the median box covers 29% of the image. The geometry is right. The weak spots are spurious boxes on dead leaves and single-leaflet boxes, and both carry the genus label. Before training, consider dropping boxes nested inside a larger box of the same image, or keeping only the largest box per prompt.
+  - **Phase C:** USDA PLANTS now redirects to `plants.sc.egov.usda.gov`, which still returns 504. That was the one retry for this round.
+  - **Queue changes:**
+    - At the front: the `p100` test run, then the val-only A4 screens `w8a8_s0.5_p100_res196` and `w8a8_s0.5_p100_tome2`, then `res210` (a new A3 Pareto point at about −12% GFLOPs).
+    - **Decided:** `w4a8dyn_g32` runs val-only. Dynamic INT8 activations are lossless on test (`w8a8dyn` vs `w8a16`: +0.02 pt), so 8da4w's test result follows from `w4a16_g32` plus the val check. The ~29 min saved lets `drop2` start before 10:00.
+    - **Round timing:** `overnight.sh` measures its 90-minute round interval from the end of the previous round, so round 4 starts at about 09:30. Until 10:00 it can only influence `drop4`. That's why this round waited for the A4 screens and made the test-pick call itself.
+    - **A4 screens (val-only)**, under a rule fixed before they landed (additive if regional val is within 0.2 pt of the float structure; then no test run):
+      - `w8a8_s0.5_p100_res196`: 88.25% vs `res196` 88.25%.
+      - `w8a8_s0.5_p100_tome2`: 89.23% vs `tome_r2` 89.23%.
+      - Both are additive, so **no combo test runs**: test ≈ the structure's test row − 0.1 pt. The GPU time goes to `base_subset`, `drop2` and `drop4` instead, which are the real unknowns.
+    - **Open signal:** both combos lose 0.75–1.0 pt of val_ext on top of their structure (46.33 vs 47.08; 46.73 vs 47.69), while static alone loses 0.03 pt. That's about 1 SE on 6.7K images. Test can't settle it, because test is regional, but `p100`'s rare-species test top-1 also dips 0.44 pt. If a structural fallback is ever shipped on the NPU, check val_ext with a different calibration seed first.
+    - **Expected queue timeline:** `res210` to about 08:10, then `w4a8dyn_g32` val-only to about 08:20, then `base_subset` to about 08:56, then `drop2` to about 09:30, then `drop4` (starting about 09:30) to about 10:00.
+  - **Next round should first:**
+    1. Read `res210`, `w4a8dyn_g32` (val), `base_subset` and `drop2` (from about 09:25), and rerun `efficiency_report`.
+    2. Add to D-032's structural part:
+       - `res210` (test)
+       - `drop2`/`drop4` (Δ against `base_subset`, not FP16)
+       - the 8da4w val number.
+       Then tick A1 and A3, and A4 (screens done, no test picks, see above).
+    3. Don't add GPU jobs that can't start before 10:00. If the queue empties early, the only planned GPU work left is Phase D: `python -m transferner.data.pseudo_boxes`, about 30K images at 20 per genus. Throughput is unmeasured, so queue it only if it would start before about 09:30.
+    4. After 10:00 everything left is phone work (D-032's list), Phase B's bryophyte field photos (needs the manifests free), Phase C's second source (USDA still 504), and Phase D training. Unless a job failed, write `STATUS: DONE` under "## Journal" with that summary.

@@ -6,6 +6,10 @@ test  = regional Pl@ntNet/iNaturalist records with in_tol=False (no gbifID match
 train/val = everything else that survived dedup, 70/15 (renormalised) grouped by
         observation_id and stratified by species, then capped per species
         (caps.default, caps.toxic_or_lookalike); overflow is split="unused".
+val_ext / train_ext = out-of-region recent photos of rare species (D-026), never test:
+        first external.val_per_species observations per species (by hash) -> val_ext,
+        the rest -> train_ext. Assigned apart from train/val, so they leave the
+        existing train/val/test/unused assignment untouched.
 Species with fewer than caps.min_images train+val images are flagged zero_shot_only
 (kept in test, no probe/detector training weight).
 Writes manifests/splits.parquet (uuid -> split) and updates species.parquet counts."""
@@ -44,6 +48,16 @@ def main() -> None:
     test_obs = set(cand.loc[cand.r < cfg["regional"]["test_per_species"], "observation_id"])
     img.loc[img.observation_id.isin(test_obs), "split"] = "test"
 
+    # ---- external (out-of-region rare species): val_ext / train_ext, never test
+    ex = img.source == "gbif_external"
+    if ex.any():
+        eo = img.loc[ex, ["class_idx", "observation_id", "obs_h"]].drop_duplicates("observation_id")
+        eo = eo.sort_values(["class_idx", "obs_h"])
+        eo["r"] = eo.groupby("class_idx").cumcount()
+        val_obs = set(eo.loc[eo.r < cfg["external"]["val_per_species"], "observation_id"])
+        img.loc[ex, "split"] = np.where(img.loc[ex, "observation_id"].isin(val_obs), "val_ext", "train_ext")
+        img.loc[ex & img.in_tol, "split"] = "train_ext"          # near-ToL copies are not clean validation
+
     # ---- train / val, grouped by observation, stratified by species
     tr, va = cfg["splits"]["ratios"]["train"], cfg["splits"]["ratios"]["val"]
     val_frac = va / (tr + va)
@@ -72,7 +86,7 @@ def main() -> None:
     out.to_parquet(root / "manifests/splits.parquet", index=False)
 
     counts = out.pivot_table(index="class_idx", columns="split", values="uuid", aggfunc="size", fill_value=0)
-    for s in ("train", "val", "test", "unused"):
+    for s in ("train", "val", "test", "unused", "train_ext", "val_ext"):
         sp[f"n_{s}"] = sp.class_idx.map(counts.get(s, pd.Series(dtype=int))).fillna(0).astype(int)
     sp["zero_shot_only"] = (sp.n_train + sp.n_val) < cfg["caps"]["min_images"]
     sp.to_parquet(root / "manifests/species.parquet", index=False)

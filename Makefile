@@ -2,6 +2,9 @@
 PY := python -m transferner
 
 data: resolve species tol gbif download dedup splits
+# external needs a first splits pass (it picks species by n_train), then re-runs the tail
+external: ; $(PY).data.gbif_media --external && $(PY).data.download --only-source gbif_external --procs 2 \
+            && $(PY).data.dedup && $(PY).data.splits && $(PY).train.embed_images --splits val_ext train_ext
 # boxes (OWLv2 pseudo-labels) runs separately once the detector work starts: make boxes
 resolve:  ; $(PY).data.resolve_sources
 species:  ; $(PY).data.gbif_species_list && $(PY).data.build_species_list
@@ -18,4 +21,4 @@ quant:    ; $(PY).quant.ptq
 export:   ; $(PY).export.litert && $(PY).export.executorch && $(PY).export.bundle
 eval:     ; $(PY).eval.evaluate
 
-.PHONY: data resolve species tol gbif download dedup splits boxes bioclip detector quant export eval
+.PHONY: data external resolve species tol gbif download dedup splits boxes bioclip detector quant export eval

@@ -8,7 +8,14 @@ val, regional val and test; saves artifacts/probe.pt (W, b, scale) and logs via 
 Checkpoint selection defaults to the *regional* slice of val (recent iNat/Pl@ntNet photos,
 the deployment distribution). Most of val is TreeOfLife, which BioCLIP was pretrained on,
 so whole-val accuracy rewards memorising ToL and picks overfit checkpoints. Test is never
-used for selection."""
+used for selection. val_ext (recent out-of-region photos of rare species, D-026) covers the
+species that regional val cannot; --select balanced averages val_regional and val_ext top-1.
+--train-ext adds the train_ext photos to training.
+
+Rare-species shrinkage (D-026): after checkpoint selection, rows of species with fewer than
+shrink_below training images become normalize(a*W + (1-a)*text), a = n/(n + shrink_k).
+With few images the trained row is mostly noise, and a pure-text row cannot compete with
+image-trained rows, so the probe alone fell *below* zero-shot on rare species."""
 from __future__ import annotations
 
 import argparse
@@ -53,7 +60,11 @@ def main() -> None:
     ap.add_argument("--anchor", type=float, default=None, help="L2 pull of W back to the text init")
     ap.add_argument("--label-smoothing", type=float, default=None)
     ap.add_argument("--epochs", type=int, default=None, help="override configs/bioclip.yaml")
-    ap.add_argument("--select", choices=["val", "val_regional"], default="val_regional")
+    ap.add_argument("--select", choices=["val", "val_regional", "val_ext", "balanced"], default="val_regional")
+    ap.add_argument("--train-ext", action=argparse.BooleanOptionalAction, default=None,
+                    help="also train on train_ext (out-of-region, rare species)")
+    ap.add_argument("--shrink-k", type=float, default=None, help="0 disables rare-species shrinkage")
+    ap.add_argument("--shrink-below", type=int, default=None)
     ap.add_argument("--logit-adjust", type=float, default=None,
                     help="tau: train on logits + tau*log(train prior), predict without (long-tail fix)")
     ap.add_argument("--freeze-zero-shot", action=argparse.BooleanOptionalAction, default=None,
@@ -65,13 +76,17 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = dict(load("bioclip")["heads"]["linear_probe"])
-    for k in ("epochs", "lr", "anchor", "label_smoothing", "logit_adjust", "freeze_zero_shot"):
+    for k in ("epochs", "lr", "anchor", "label_smoothing", "logit_adjust", "freeze_zero_shot",
+              "train_ext", "shrink_k", "shrink_below"):
         if getattr(args, k) is not None:
             cfg[k] = getattr(args, k)
     cfg.setdefault("anchor", 1e-2)
     cfg.setdefault("label_smoothing", 0.0)
     cfg.setdefault("logit_adjust", 0.0)
     cfg.setdefault("freeze_zero_shot", True)
+    cfg.setdefault("train_ext", False)
+    cfg.setdefault("shrink_k", 0.0)
+    cfg.setdefault("shrink_below", 100)
     torch.manual_seed(args.seed)
     root = data_root()
     emb = root / args.emb
@@ -82,6 +97,12 @@ def main() -> None:
     rare = torch.tensor((sp.n_train < RARE_TRAIN).to_numpy())
 
     tr_e, tr_y, _ = load_split(emb, "train")
+    if cfg["train_ext"]:
+        ex_e, ex_y, _ = load_split(emb, "train_ext")
+        tr_e, tr_y = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y])
+    has_ext = (emb / "val_ext.npy").exists()
+    if has_ext:
+        xv_e, xv_y, _ = load_split(emb, "val_ext")
     va_e, va_y, va_reg = load_split(emb, "val")
     te_e, te_y, _ = load_split(emb, "test")
     vr_e, vr_y = va_e[va_reg], va_y[va_reg]
@@ -94,6 +115,8 @@ def main() -> None:
     def evaluate(fn, prefix, test=False):
         out = {f"{prefix}_val": topk(fn, va_e, va_y), f"{prefix}_val_regional": topk(fn, vr_e, vr_y),
                f"{prefix}_val_rare": topk(fn, vk_e, vk_y)}
+        if has_ext:
+            out[f"{prefix}_val_ext"] = topk(fn, xv_e, xv_y)
         if test:
             out[f"{prefix}_test"] = topk(fn, te_e, te_y)
         return out
@@ -131,13 +154,21 @@ def main() -> None:
         log.log(ep, "train", loss=tot / len(tr_e))
         for k, d in v.items():
             log.log(ep, k[2:], **d)
-        score = v[f"p_{args.select}"]["top1"]
-        print(f"epoch {ep:2d} loss {tot / len(tr_e):.4f} val {v['p_val']['top1']:.4f} "
-              f"val_regional {v['p_val_regional']['top1']:.4f} val_rare {v['p_val_rare']['top1']:.4f}", flush=True)
+        score = ((v["p_val_regional"]["top1"] + v["p_val_ext"]["top1"]) / 2 if args.select == "balanced"
+                 else v[f"p_{args.select}"]["top1"])
+        print(f"epoch {ep:2d} loss {tot / len(tr_e):.4f} " +
+              " ".join(f"{k[2:]} {d['top1']:.4f}" for k, d in v.items()), flush=True)
         if score > best:
             best, best_ep, best_state = score, ep, (W.detach().clone(), b.detach().clone())
 
     W.data, b.data = best_state
+    if cfg["shrink_k"] > 0:
+        n = counts - 1                                            # training images per species, as trained
+        a = torch.where(n < cfg["shrink_below"], n / (n + cfg["shrink_k"]), torch.ones_like(n)).cuda()[:, None]
+        res.update(evaluate(probe, "unshrunk"))
+        with torch.no_grad():
+            W.data = F.normalize(a * F.normalize(W, dim=-1) + (1 - a) * T, dim=-1)
+        print(f"shrinkage k={cfg['shrink_k']} on {(a < 1).sum().item()} species with < {cfg['shrink_below']} images")
     res.update(evaluate(probe, "probe", test=True))
     print(f"best epoch {best_ep} (by {args.select})", res)
     torch.save({"W": F.normalize(W.detach(), dim=-1).cpu(), "b": b.detach().cpu(), "scale": scale},
@@ -147,7 +178,8 @@ def main() -> None:
                 tag=args.tag, lr=cfg["lr"], anchor=cfg["anchor"], wd=args.wd,
                 label_smoothing=cfg["label_smoothing"], epochs=cfg["epochs"], best_epoch=best_ep,
                 logit_adjust=cfg["logit_adjust"], freeze_zero_shot=cfg["freeze_zero_shot"],
-                select=args.select, out=args.out)
+                select=args.select, train_ext=cfg["train_ext"], shrink_k=cfg["shrink_k"],
+                shrink_below=cfg["shrink_below"], out=args.out)
     log.close()
 
 

@@ -34,7 +34,7 @@ class Images(Dataset):
 @torch.no_grad()
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
+    ap.add_argument("--splits", nargs="+", default=None, help="default: every split except 'unused'")
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--out", default="artifacts/img_emb", help="relative to TRANSFERNER_DATA")
@@ -48,6 +48,8 @@ def main() -> None:
     spl = pd.read_parquet(root / "manifests/splits.parquet")
     paths = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
     spl = spl.merge(paths, on="uuid")
+    if args.splits is None:
+        args.splits = [s for s in ("train", "val", "test", "train_ext", "val_ext") if (spl.split == s).any()]
     model, pre, _ = bioclip.load()
     visual = model.visual
 

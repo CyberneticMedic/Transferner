@@ -84,6 +84,8 @@ def main() -> None:
 
     sets = {"val_regional": load(emb, "val", "gbif_regional"), "val": load(emb, "val"),
             "test": load(emb, "test")}
+    if (emb / "val_ext.npy").exists():                  # rare species, out-of-region (D-026); report only
+        sets["val_ext"] = load(emb, "val_ext")
     T = fit_temperature(logits_fn, *sets[args.fit_on])
     print(f"T = {T:.4f} (fitted on {args.fit_on}, n={len(sets[args.fit_on][1]):,})")
     for name, (e, y) in sets.items():

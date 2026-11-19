@@ -34,6 +34,11 @@ regional:                    # step 04: recent regional photos (post-ToL-snapsho
   per_species: 120           # observations fetched per species
   test_per_species: 50       # observations reserved for test; the rest join train/val
 
+external:                    # step 04 --external: recent field photos from OUTSIDE the region (D-026)
+  max_train: 100             # only species with fewer train images than this
+  per_species: 60            # observations fetched per species (same datasets + date cutoff as regional)
+  val_per_species: 20        # observations -> split val_ext (selection for rare species); rest -> train_ext
+
 images:
   store_max_side: 640        # originals are resized on ingest; keeps detector/MNv4 headroom above 224
   jpeg_quality: 92

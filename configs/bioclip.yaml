@@ -21,6 +21,9 @@ heads:
     logit_adjust: 0.5           # train on logits + 0.5*log(train prior); predict without
     freeze_zero_shot: false     # freezing rare species' text rows did not keep their zero-shot accuracy
     label_smoothing: 0.0        # 0.1 cost 0.3 pt regional val
+    train_ext: true             # + out-of-region recent photos of rare species (D-026)
+    shrink_k: 0                 # off. 30 = rare rows -> normalize(a*W + (1-a)*text), a = n/(n+k): rare species
+    shrink_below: 100           #   +20 pt but common -0.5 pt top-1 and mosses -5 pt (D-026); a product choice
   lora:                         # experimental only (D-010)
     enabled: false
     r: 16

@@ -1,6 +1,7 @@
 """Step 05. Image fetcher (resumable, parallel, per-host rate limits).
 
-Input: manifests/gbif_candidates.parquet (regional) U manifests/tol_candidates.parquet.
+Input: manifests/gbif_candidates.parquet (regional) U manifests/tol_candidates.parquet
+U manifests/gbif_external.parquet (out-of-region, rare species; optional).
 Queue order: toxic / look-alike / must-include species first, then round-robin across
 species, so a partial run is already useful. Within a species: regional first, then ToL
 by pick_rank.
@@ -51,7 +52,7 @@ HOST_LIMITS = {"inaturalist-open-data.s3.amazonaws.com": 256,   # AWS Open Data 
 DEFAULT_HOST_LIMIT = 6
 MAX_BYTES = 40 * 2**20
 MIN_FREE_GB = 150
-DEAD_HOST_AFTER = 60          # attempts with zero successes -> skip host for the rest of this run
+DEAD_HOST_AFTER = 60          # completed attempts with zero successes -> skip host for the rest of this run
 CHECKPOINT_EVERY = 2000
 MIN_AVAIL_GB = 16             # pause new fetches while system MemAvailable is below this (shared box)
 # Bandwidth cap shared by every running download process (all runs), re-read every 2 s so it can be
@@ -141,7 +142,7 @@ def load_queue(root: Path, full: bool = True) -> pd.DataFrame:
     sp = pd.read_parquet(root / "manifests/species.parquet")
     want = COLS + OPT if full else QUEUE_COLS
     parts = []
-    for name in ("gbif_candidates", "tol_candidates"):
+    for name in ("gbif_candidates", "tol_candidates", "gbif_external"):   # append-only: order = row order
         p = root / f"manifests/{name}.parquet"
         if p.exists():
             have = set(pq.read_schema(p).names)
@@ -150,7 +151,9 @@ def load_queue(root: Path, full: bool = True) -> pd.DataFrame:
     pri = sp.set_index("class_idx")
     q["priority"] = q.class_idx.map((pri.is_toxic | pri.is_lookalike | pri.must_include).astype(int))
     q["n_regional"] = q.class_idx.map(pri.n_regional)
-    q["src_order"] = (q.source != "gbif_regional").astype(int)
+    # regional first, then ToL, then external; a new source must sort last so existing rows keep
+    # their relative order (the sorts below are multi-key, hence stable)
+    q["src_order"] = q.source.map({"gbif_regional": 0, "tol": 1}).fillna(2).astype(int)
     q["pick_rank"] = q["pick_rank"].fillna(0) if "pick_rank" in q else 0
     # round-robin across species: rank-within-species first, so every species fills evenly
     q = q.sort_values(["priority", "class_idx", "src_order", "pick_rank"], ascending=[False, True, True, True])
@@ -257,7 +260,6 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
                     f.host = h
                     pending.add(f)
                     inflight[h] += 1
-                    tries[h] += 1
                     progressed = True
                 if not q:
                     del hosts[h]
@@ -270,7 +272,6 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
             f.host = h
             pending.add(f)
             inflight[h] += 1
-            tries[h] += 1
             if not q:
                 del hosts[h]
 
@@ -282,7 +283,8 @@ def run_worker(root: Path, todo: pd.DataFrame, workers: int, n_procs: int, label
             for f in fin:
                 pending.discard(f)
                 inflight[f.host] -= 1
-                res = f.result()
+                tries[f.host] += 1          # count *answered* attempts: with many requests in flight,
+                res = f.result()            # counting dispatches condemned live hosts before any reply
                 oks[f.host] += res["status"] == "ok"
                 n_ok += res["status"] == "ok"
                 buf.append(res)
@@ -345,7 +347,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="stop after this many new attempts (0 = all)")
     ap.add_argument("--retry-failed", action="store_true")
     ap.add_argument("--merge-only", action="store_true")
-    ap.add_argument("--only-source", choices=["tol", "gbif_regional"])
+    ap.add_argument("--only-source", choices=["tol", "gbif_regional", "gbif_external"])
     ap.add_argument("--max-mbps", type=float, default=None,
                     help="total payload MB/s across ALL download processes (0 = unlimited); "
                          f"persists in {BANDWIDTH_FILE}, default {DEFAULT_TOTAL_MBPS}")

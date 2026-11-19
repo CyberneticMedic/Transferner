@@ -15,9 +15,10 @@
 | regional_species.parquet | gbif_taxon_key | regional occurrence counts (total, with image, per state) |
 | tol_candidates.parquet | uuid | ToL rows picked per species (curation_tier, license, pick_rank) |
 | gbif_candidates.parquet | uuid | recent regional Pl@ntNet / iNaturalist photos (event_date, state, organ) |
+| gbif_external.parquet | uuid | recent **out-of-region** photos of rare species (n_train < 100), same datasets and date cutoff; never test (D-026) |
 | species.parquet | class_idx | accepted name, gbif_taxon_key, genus, family, is_toxic, is_lookalike, has_traits, n_regional |
 | images.parquet | uuid | source, source_id/gbifID, observation_id, path, organ, eventDate, state, license, rights_holder, phash, in_tol |
-| splits.parquet | uuid | split ∈ train/val/test |
+| splits.parquet | uuid | split ∈ train/val/test/unused, plus val_ext/train_ext for gbif_external rows (D-026) |
 | boxes.parquet | uuid, box_idx | x0,y0,x1,y1 (normalised), score, genus_idx |
 | priors_state_month.parquet | taxon_key, state, month | count |
 

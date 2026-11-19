@@ -146,3 +146,29 @@ Notes on the token-merging grid:
   - **Smoke-tested** on 400 images per split: every variant type runs, and the custom forward matches stock open_clip at cosine 1.000000.
   - **Queued:** A1, A2 and A3 in that order, about 6.5 h of GPU time.
   - **Next round should:** check A1/A2 results as they land, adjust A2 if the partial search misses, and start Phase C in parallel.
+- **2026-11-19, round 1 (02:35–03:15):**
+  - **Found:**
+    - `fp16` finished (rc 0, 19 min): test top-1 84.95%, top-5 96.45%, regional val 90.03%, val_ext 48.89%, 188 img/s, 1,206 MB, 334.6 GFLOPs.
+    - **A2 targets:** regional val ≥ 0.8823 (the partial search's own goal); test ≥ 0.8325 to accept.
+    - `w8a16` finished (rc 0): test 84.94% (Δ −0.01 pt, McNemar p 0.74), weights 606 MB. Weight-only INT8 is free.
+    - No failed jobs.
+  - **Phase C (built this round, D-027):**
+    - The trait table came from the NC State toolbox. FDA PLANTOX is gone; USDA PLANTS returned 504 all round.
+    - 2,714 cited rows over 872 species. Source pages cover 68% of test images.
+    - DMR is now in `metrics.dmr`, `evaluate.py` and `efficiency_report`. Baseline (probe, no abstention): 5.45% contact, 4.38% ingestion. Zero-shot: 6.44% / 4.63%.
+    - **Decided:** genus pages back species without their own page. Toxic rows apply as stated; edible rows become conditional.
+  - **A5:** `efficiency_report.py` writes `results/EFFICIENCY.md` and `results/figures/efficiency_pareto.png`. It runs on the CPU in about 10 s, so rerun it each round.
+  - **Phase B:** the diagnosis is in the plan section. Briefly: moss errors are cross-family, the training mix is 99% ToL, and the bryophyte selection slice is `val_ext_bryo`.
+    - Added `linear_probe --w-field/--w-bryo/--extra-train` and `embed_images --phyla`. All CPU smoke-tested.
+  - **Queue changes:**
+    - `eval.evaluate` at the front: official `eval.csv` rows with DMR, about 2 min.
+    - **Decided:** 7 Phase B jobs go after A1 and before A3: 5 probes, the unused-bryophyte embed (14.6K images) and its probe, about 30 min. This brings B's results in by about 05:00 instead of after A3, and delays A3 by 30 min.
+    - The queue now runs until about 09:30, so Phase D will not run tonight (noted in the plan).
+  - **Next round should first:**
+    1. Check `done.tsv` for `quant.sensitivity` and `quant.partial_search`.
+       - If the partial search missed, queue the next A2 step at the front: `quant.sensitivity --smooth 0.8 --tag s08`, then `quant.partial_search --smooth 0.8 --sens quant_sensitivity_s08.csv --prefix w8a8p`.
+       - If it hit on test, write the A2 decision (the next free D number) and tick A2.
+    2. Rerun `efficiency_report`.
+    3. Read the `phaseB_*` rows in `results/tables/bioclip_probe.csv` and apply the D-026 rule on `probe_val_ext_bryo_top1` and `probe_val_regional_top1`. Only if a variant passes, retrain the production probe with it and record a decision.
+    4. Plan A4 once A3 results land.
+  - **Careful:** `linear_probe` defaults to `--out artifacts/probe.pt`, which is production. Every experiment needs its own `--out`.

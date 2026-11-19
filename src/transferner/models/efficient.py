@@ -94,6 +94,7 @@ class QState:
         self._samples: dict[str, list[torch.Tensor]] = {}
         self._minmax: dict[str, list[float]] = {}
         self.chan_amax: dict[str, torch.Tensor] = {}
+        self._gen: torch.Generator | None = None   # seeded: calibration ranges are reproducible
 
     def is_active(self, name: str) -> bool:
         if self.v.a_bits >= 16 or name in self.v.fp16_layers:
@@ -107,7 +108,9 @@ class QState:
             return x
         if self.mode == "calib_range":
             xf = x.detach().float().reshape(-1)
-            idx = torch.randint(0, xf.numel(), (self.SAMPLES_PER_BATCH,), device=xf.device)
+            if self._gen is None or self._gen.device != xf.device:
+                self._gen = torch.Generator(device=xf.device).manual_seed(0)
+            idx = torch.randint(0, xf.numel(), (self.SAMPLES_PER_BATCH,), device=xf.device, generator=self._gen)
             self._samples.setdefault(name, []).append(xf[idx].cpu())
             mm = self._minmax.setdefault(name, [math.inf, -math.inf])
             mm[0], mm[1] = min(mm[0], xf.min().item()), max(mm[1], xf.max().item())

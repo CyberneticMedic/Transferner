@@ -17,6 +17,10 @@ Writes manifests/boxes.parquet: uuid, split, class_idx, genus, family, x0, y0, x
 the original image width/height), score, prompt, fallback. Resumable: each --chunk of images is kept
 as <parts>/part-NNNNN.parquet and skipped on restart.
 
+boxes.parquet stays raw. `drop_nested()` is the training-time cleanup for the part-agnostic
+detector (D-015): it drops boxes that sit >= 90% inside a larger box of the same image. On the
+64-image smoke set it removes 19 of 77 boxes (13 'a leaf'); boxes/image 1.60 -> 1.21.
+
 GPU runs go through scripts/q.sh. CPU smoke test (a few images, boxes drawn for a visual check):
   python -m transferner.data.pseudo_boxes --device cpu --limit 8 --draw 8 \\
       --out artifacts/pseudo_boxes_smoke/boxes.parquet --parts artifacts/pseudo_boxes_smoke/parts
@@ -83,6 +87,31 @@ def boxes_for(logits, pred_boxes, sizes, min_score: float, iou: float, max_boxes
         b, s, lab = b[ok], s[ok], lab[ok]
         k = nms(b, s, iou)[:max_boxes]
         yield b[k].cpu().numpy(), s[k].cpu().numpy(), lab[k].cpu().numpy()
+
+
+def drop_nested(boxes: pd.DataFrame, contain: float = 0.9) -> pd.DataFrame:
+    """Training-time cleanup of boxes.parquet (the labeller's output stays raw): within each image,
+    drop a box when at least `contain` of its area lies inside a larger box that is itself kept.
+    This removes the single-leaflet and single-flower boxes OWLv2 puts inside a whole-plant box
+    (round-3 smoke check); separate subjects side by side are untouched. Fallback rows are kept."""
+    keep = np.ones(len(boxes), bool)
+    xy = boxes[["x0", "y0", "x1", "y1"]].to_numpy(np.float64)
+    area = (xy[:, 2] - xy[:, 0]) * (xy[:, 3] - xy[:, 1])
+    for idx in boxes.groupby("uuid", sort=False).indices.values():
+        if len(idx) < 2:
+            continue
+        idx = idx[np.argsort(-area[idx], kind="stable")]       # largest first
+        kept: list[int] = []
+        for i in idx:
+            for j in kept:
+                iw = min(xy[i, 2], xy[j, 2]) - max(xy[i, 0], xy[j, 0])
+                ih = min(xy[i, 3], xy[j, 3]) - max(xy[i, 1], xy[j, 1])
+                if iw > 0 and ih > 0 and iw * ih >= contain * area[i]:
+                    keep[i] = False
+                    break
+            else:
+                kept.append(i)
+    return boxes[keep].reset_index(drop=True)
 
 
 def draw(root, rows: pd.DataFrame, out_dir) -> None:

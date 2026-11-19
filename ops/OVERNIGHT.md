@@ -196,7 +196,7 @@ Notes on the token-merging grid:
     3. Read the `phaseB_*` rows in `results/tables/bioclip_probe.csv` and apply the D-026 rule on `probe_val_ext_bryo_top1` and `probe_val_regional_top1`. Only if a variant passes, retrain the production probe with it and record a decision.
     4. Plan A4 once A3 results land.
   - **Careful:** `linear_probe` defaults to `--out artifacts/probe.pt`, which is production. Every experiment needs its own `--out`.
-- **2026-11-19, round 2 (04:44–05:45):**
+- **2026-11-19, round 2 (04:44–05:30):**
   - **Found:**
     - All jobs since round 1 finished with rc 0: sensitivity, partial search, `w8a8dyn`, `w4a16_g128` and the Phase B probes.
     - **A2 passed at k = 0** (D-028): full static W8A8 with SmoothQuant 0.5. Test 83.52% against a threshold of 83.25%. The margin is thin, and contact DMR rises from 5.46% to 6.20%.
@@ -219,14 +219,16 @@ Notes on the token-merging grid:
     - **Decided:** don't scrape narrative pages into a safety table. Retry USDA once per round.
   - **Queue changes:**
     - Phase B went first, followed by the field-weight sweep (2–32) and `field3+unused`.
-    - k1 ran; k4 was replaced by `w8a8_s0.5_p99.9` and `_p99.5` (val-only). The PT2E histogram observer reaches cosine 0.974 against FP32, where the simulation's 99.99-percentile ranges reach 0.944, so tighter clipping may recover the margin.
+    - k1 ran; k4 was replaced by `w8a8_s0.5_p99.9` and `_p99.5` (val-only).
+    - **Correction (05:26):** p99.9 collapsed to 59.9% regional val because outlier channels matter. p99.5 was replaced with `w8a8_s0.5_p100` (min/max ranges). The PT2E histogram observer reaches cosine 0.974 against FP32, where the simulation's 99.99-percentile ranges reach 0.944, so tighter clipping may recover the margin.
     - A3 was reordered: ToMe and resolution first, then `w4a16_g32` and `w4a8dyn_g32`, then `base_subset`, `drop2`, `drop4`.
     - The queue should run until about 09:20.
   - **Next round should first:**
-    1. Check that `linear_probe --tag d030_w_field8`, `train.calibrate` and `eval.evaluate` succeeded. Compare the new `eval.csv` probe row (top-1 about 85.3%, DMR) with D-026's.
-    2. **Read `w8a8_s0.5_p99.9` and `_p99.5`** (val-only rows).
+    1. *(Already verified in round 2: the production retrain, `calibrate` and `evaluate` succeeded. Test 85.32%, ECE 0.0053, DMR 5.40% / 4.12%.)*
+    2. **Read `w8a8_s0.5_p100`** (val-only; p99.9 already failed at 59.9%).
        - If either beats k0's regional val (88.75–88.90%) by ≥ 0.3 pt, queue it on test **ahead of the drop jobs**: `eval.efficiency --name w8a8_s0.5_pXX --w-bits 8 --a-bits 8 --a-mode static --smooth 0.5 --a-pct XX` without `--val-only`. This takes about 36 min. Reuse the same name: calibration is seeded, and the full row supersedes the val-only row in the report.
        - Then update D-028's recommended calibration.
+       - If p100 is not better either, the next step is code: an MSE-optimal per-tensor range search in `QState.finish_range_calibration`, like PT2E's HistogramObserver, which reached cosine 0.974 on export. Test it val-only, and don't spend test runs on calibration variants that don't beat k0 on val.
     3. Rerun `efficiency_report` as the ToMe and resolution rows land, then plan A4 (val-only screens ahead of `base_subset`, `drop2`, `drop4`; cut `drop4` first).
     4. CPU work while the GPU is busy:
        - Retry USDA once.

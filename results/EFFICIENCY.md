@@ -14,4 +14,11 @@ Latency, memory and NPU compile need the phone; GPU img/s here is a ROCm proxy f
 | w8a8dyn | quantization | fp16 | 84.96 | +0.01 | 1.0001 | 96.44 | 89.97 | 49.07 | 58.09 | 0.9800 | 6.9e-01 | 5.41 | 4.36 | 606 | 334.6 | – |
 | w8a8p_s0.5_k0 | quantization | fp16 | 83.52 | -1.43 | 0.9832 | 96.12 | 88.75 | 49.95 | 58.12 | 0.9031 | 2.9e-123 | 6.20 | 4.68 | 606 | 334.6 | – |
 
+## Val-only attempts (partial-INT8 search)
+
+| variant | val reg top-1 | Δ pt vs fp16 | rel | val_ext top-1 | fp16 layers |
+|---|---|---|---|---|---|
+| w8a8p_s0.5_k1 | 88.79 | -1.23 | 0.9863 | 49.22 | 1 |
+| w8a8_s0.5_p99.9 | 59.93 | -30.10 | 0.6657 | 24.28 | 0 |
+
 ![Pareto](figures/efficiency_pareto.png)

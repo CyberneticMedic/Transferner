@@ -20,8 +20,11 @@ Recipes (litert_torch generative quant recipes, applied by ai-edge-quantizer aft
   w8    INT8 weight-only, per channel (the deployable W8A16 of the efficiency sweep)
   w8dyn INT8 weights + dynamic INT8 activations (XNNPACK-style, the sweep's w8a8dyn)
   int8static  NPU-style full INT8 via the PT2E quantizer: per-channel INT8 weights, static
-        per-tensor INT8 activations (HistogramObserver) on every linear, conv and add, calibrated
-        on --calib train images; --smooth A folds SmoothQuant into the weights first (D-028)
+        per-tensor INT8 activations (HistogramObserver, or --act-observer minmax) on every
+        linear, conv and add, calibrated on --calib train images; --smooth A folds SmoothQuant
+        into the weights first (D-028); --linear-only restricts it to the linears (D-029).
+        --pt2e-only stops before the LiteRT conversion and checks the PT2E-quantized PyTorch
+        graph instead (a few GB of RAM instead of ~14 GB; D-029 found the converter faithful)
 
 Check: --images regional val photos (fixed hash order) through PyTorch FP32 and through the
 LiteRT interpreter (XNNPACK, --threads). Reports mean/min cosine, top-1 agreement under the
@@ -112,13 +115,20 @@ def main() -> None:
     ap.add_argument("--smooth", type=float, default=0.0, help="int8static: SmoothQuant alpha, 0 = off")
     ap.add_argument("--linear-only", action="store_true",
                     help="int8static: quantize only linears (the D-028 simulation's scope), not adds/muls/cat")
+    ap.add_argument("--act-observer", choices=["histogram", "minmax"], default="histogram",
+                    help="int8static: activation range observer (minmax = the sweep's --a-pct 100)")
+    ap.add_argument("--pt2e-only", action="store_true",
+                    help="int8static: check the PT2E-quantized PyTorch graph, skip the LiteRT conversion")
     args = ap.parse_args()
+    if args.pt2e_only and args.recipe != "int8static":
+        ap.error("--pt2e-only needs --recipe int8static")
     mem_guard(args.min_free_gb)
     torch.set_num_threads(args.threads)
     root = data_root()
     out_dir = root / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = args.recipe + (f"_sq{args.smooth}" if args.smooth else "") + ("_linear" if args.linear_only else "")
+    tag = (args.recipe + (f"_sq{args.smooth}" if args.smooth else "") + ("_linear" if args.linear_only else "")
+           + ("_minmax" if args.act_observer == "minmax" else "") + ("_pt2e" if args.pt2e_only else ""))
     path = out_dir / f"bioclip_visual_{tag}.tflite"
     row = {"recipe": tag, "torch": torch.__version__, "images": args.images, "threads": args.threads}
 
@@ -134,11 +144,20 @@ def main() -> None:
         ref = torch.cat([enc(x[i:i + 16]) for i in range(0, len(x), 16)]).numpy()
 
     t0 = time.time()
+    if args.pt2e_only:
+        q, diag = quantize_pt2e(enc, x[:1], check_images(root, pre, args.calib, "train")[0], args.smooth,
+                                args.linear_only, args.act_observer, x[:16])
+        row.update(calib=args.calib, **diag, convert_s=round(time.time() - t0))
+        with torch.no_grad():
+            got = F.normalize(torch.cat([q(x[i:i + 1]) for i in range(len(x))]), dim=-1).numpy()
+        row.update(status="pt2e_only", **agreement(root, ref, got, y), peak_rss_gb=round(peak_rss_gb(), 1))
+        write(row)
+        return
     if not args.skip_convert:
         try:
             if args.recipe == "int8static":
                 m, diag = convert_int8_static(litert_torch, enc, x[:1], check_images(root, pre, args.calib, "train")[0],
-                                              args.smooth, args.linear_only, x[:16])
+                                              args.smooth, args.linear_only, x[:16], args.act_observer)
                 row.update(calib=args.calib, **diag)
             else:
                 m = litert_torch.convert(enc, (x[:1],), quant_config=quant_config(args.recipe))
@@ -165,24 +184,41 @@ def main() -> None:
         got.append(it.get_tensor(outp["index"]).reshape(-1).astype(np.float32))
     got = np.stack(got)
     got /= np.linalg.norm(got, axis=1, keepdims=True)
-    cos = (got * ref).sum(1)
-    pr = torch.load(root / "artifacts/probe.pt", map_location="cpu")
-    W, b, s = pr["W"].float().numpy(), pr["b"].float().numpy(), float(pr["scale"])
-    p_ref, p_got = (s * ref @ W.T + b).argmax(1), (s * got @ W.T + b).argmax(1)
-    row.update(status="ok", cos_mean=float(cos.mean()), cos_min=float(cos.min()),
-               top1_agree=float((p_ref == p_got).mean()), top1_ref=float((p_ref == y).mean()),
-               top1_tflite=float((p_got == y).mean()),
+    row.update(status="ok", **agreement(root, ref, got, y),
                x86_ms_median=round(1000 * float(np.median(times[1:])), 1),
                peak_rss_gb=round(peak_rss_gb(), 1))
     write(row)
 
 
-def convert_int8_static(litert_torch, enc: Encoder, sample: torch.Tensor, calib: torch.Tensor, smooth: float,
-                        linear_only: bool, probe_x: torch.Tensor):
-    """PT2E static INT8 -> LiteRT. Also returns the cosine of the PT2E-quantized PyTorch graph against
-    the float encoder on probe_x, so quantization damage and conversion bugs can be told apart."""
+def agreement(root: Path, ref: np.ndarray, got: np.ndarray, y: np.ndarray) -> dict:
+    """Cosine and top-1 agreement (production head) of normalized embeddings `got` against `ref`."""
+    cos = (got * ref).sum(1)
+    pr = torch.load(root / "artifacts/probe.pt", map_location="cpu")
+    W, b, s = pr["W"].float().numpy(), pr["b"].float().numpy(), float(pr["scale"])
+    p_ref, p_got = (s * ref @ W.T + b).argmax(1), (s * got @ W.T + b).argmax(1)
+    return dict(cos_mean=float(cos.mean()), cos_min=float(cos.min()), top1_agree=float((p_ref == p_got).mean()),
+                top1_ref=float((p_ref == y).mean()), top1_tflite=float((p_got == y).mean()))
+
+
+def static_quantizer(linear_only: bool, act_observer: str):
+    import dataclasses
     from litert_torch.quantize.pt2e_quantizer import PT2EQuantizer, get_symmetric_quantization_config
-    from litert_torch.quantize.quant_config import QuantConfig
+    from torchao.quantization.pt2e import MinMaxObserver
+
+    class LinearOnly(PT2EQuantizer):
+        STATIC_OPS = ["linear", "addmm"]
+
+    cfg = get_symmetric_quantization_config(is_per_channel=True, is_dynamic=False)
+    if act_observer == "minmax":               # plain running min/max, like efficient.py's a_pct >= 100
+        act = dataclasses.replace(cfg.input_activation, observer_or_fake_quant_ctr=MinMaxObserver.with_args(eps=2**-12))
+        cfg = dataclasses.replace(cfg, input_activation=act, output_activation=act)
+    return (LinearOnly() if linear_only else PT2EQuantizer()).set_global(cfg)
+
+
+def quantize_pt2e(enc: Encoder, sample: torch.Tensor, calib: torch.Tensor, smooth: float, linear_only: bool,
+                  act_observer: str, probe_x: torch.Tensor, quantizer=None):
+    """SmoothQuant fold (optional) + PT2E prepare / calibrate / convert. Returns the quantized PyTorch
+    graph and its cosine against the float encoder on probe_x."""
     from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
     if smooth:                       # exact in float: folds into LayerNorms / V rows of enc.visual in place
         from ..models.efficient import EfficientVisual, Variant, calibrate
@@ -193,12 +229,7 @@ def convert_int8_static(litert_torch, enc: Encoder, sample: torch.Tensor, calib:
         del ev
     with torch.no_grad():
         ref = torch.cat([enc(probe_x[i:i + 1]) for i in range(len(probe_x))])
-
-    class LinearOnly(PT2EQuantizer):
-        STATIC_OPS = ["linear", "addmm"]
-
-    quantizer = (LinearOnly() if linear_only else PT2EQuantizer()).set_global(
-        get_symmetric_quantization_config(is_per_channel=True, is_dynamic=False))
+    quantizer = quantizer or static_quantizer(linear_only, act_observer)
     m = torch.export.export(enc, (sample,)).module()
     m = prepare_pt2e(m, quantizer)
     with torch.no_grad():
@@ -209,6 +240,16 @@ def convert_int8_static(litert_torch, enc: Encoder, sample: torch.Tensor, calib:
         q = F.normalize(torch.cat([m(probe_x[i:i + 1]) for i in range(len(probe_x))]), dim=-1)
     diag = {"pt2e_cos_mean": float((q * ref).sum(-1).mean())}
     print("PT2E (PyTorch side) cosine vs float:", diag, flush=True)
+    return m, diag
+
+
+def convert_int8_static(litert_torch, enc: Encoder, sample: torch.Tensor, calib: torch.Tensor, smooth: float,
+                        linear_only: bool, probe_x: torch.Tensor, act_observer: str = "histogram"):
+    """PT2E static INT8 -> LiteRT. Also returns the cosine of the PT2E-quantized PyTorch graph against
+    the float encoder on probe_x, so quantization damage and conversion bugs can be told apart."""
+    from litert_torch.quantize.quant_config import QuantConfig
+    quantizer = static_quantizer(linear_only, act_observer)
+    m, diag = quantize_pt2e(enc, sample, calib, smooth, linear_only, act_observer, probe_x, quantizer)
     return litert_torch.convert(m, (sample,), quant_config=QuantConfig(pt2e_quantizer=quantizer)), diag
 
 

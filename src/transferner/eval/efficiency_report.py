@@ -168,11 +168,16 @@ def main() -> None:
                  f"{fmt(getattr(r, 'dmr_contact', np.nan), 2, True)} | {fmt(getattr(r, 'dmr_ingestion', np.nan), 2, True)} | "
                  f"{fmt(r.weight_mb, 0)} | {fmt(r.gflops, 1)} | {fmt(getattr(r, 'gpu_img_s', np.nan), 0)} |")
     if len(val_only):
-        L += ["", "## Val-only attempts (partial-INT8 search)", "",
-              "| variant | val reg top-1 | Δ pt vs fp16 | rel | val_ext top-1 | fp16 layers |", "|---|---|---|---|---|---|"]
+        L += ["", "## Val-only runs (partial-INT8 search, calibration and combination screens)", "",
+              "| variant | val reg top-1 | Δ pt vs fp16 | rel | val_ext top-1 | agree fp16 | cos fp16 | fp16 layers | GFLOPs | note |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
         for r in val_only.itertuples():
+            note = getattr(r, "note", "")
             L.append(f"| {r.name} | {fmt(r.val_regional_top1, 2, True)} | {fmt(r.d_val_regional_top1, 2, True, True)} | "
-                     f"{fmt(r.rel_val_regional_top1, 4)} | {fmt(getattr(r, 'val_ext_top1', np.nan), 2, True)} | {r.fp16_k} |")
+                     f"{fmt(r.rel_val_regional_top1, 4)} | {fmt(getattr(r, 'val_ext_top1', np.nan), 2, True)} | "
+                     f"{fmt(getattr(r, 'val_regional_agree_ref', np.nan), 4)} | "
+                     f"{fmt(getattr(r, 'val_regional_cos_ref', np.nan), 4)} | {r.fp16_k} | {fmt(r.gflops, 1)} | "
+                     f"{'' if pd.isna(note) else note} |")
     L += ["", "![Pareto](figures/efficiency_pareto.png)", ""]
     (RESULTS / "EFFICIENCY.md").write_text("\n".join(L))
     print("\n".join(L[:12 + len(tested)]))

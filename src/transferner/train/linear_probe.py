@@ -75,6 +75,8 @@ def main() -> None:
                     help="tau: train on logits + tau*log(train prior), predict without (long-tail fix)")
     ap.add_argument("--freeze-zero-shot", action=argparse.BooleanOptionalAction, default=None,
                     help="keep zero_shot_only species' text rows frozen")
+    ap.add_argument("--extra-train", nargs="+", default=[],
+                    help="more training embeddings, <dir>/<split> relative to TRANSFERNER_DATA")
     ap.add_argument("--w-field", type=float, default=1.0, help="loss weight of field photos (regional, train_ext)")
     ap.add_argument("--w-bryo", type=float, default=1.0, help="loss weight of bryophyte species")
     ap.add_argument("--seed", type=int, default=0)
@@ -109,6 +111,11 @@ def main() -> None:
         ex_e, ex_y, _ = load_split(emb, "train_ext")
         tr_e, tr_y = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y])
         tr_field = torch.cat([tr_field, torch.ones(len(ex_y), dtype=torch.bool)])   # train_ext: field photos
+    for x in args.extra_train:
+        d_, s_ = x.rsplit("/", 1)
+        ex_e, ex_y, ex_f = load_split(root / d_, s_)
+        tr_e, tr_y, tr_field = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y]), torch.cat([tr_field, ex_f])
+        print(f"extra train {x}: {len(ex_y):,} images")
     bryo = torch.tensor(sp.phylum.isin(["Bryophyta", "Marchantiophyta"]).to_numpy())
     tr_w = torch.where(tr_field, args.w_field, 1.0) * torch.where(bryo[tr_y], args.w_bryo, 1.0)
     weighted = args.w_field != 1.0 or args.w_bryo != 1.0
@@ -196,7 +203,8 @@ def main() -> None:
                 label_smoothing=cfg["label_smoothing"], epochs=cfg["epochs"], best_epoch=best_ep,
                 logit_adjust=cfg["logit_adjust"], freeze_zero_shot=cfg["freeze_zero_shot"],
                 select=args.select, train_ext=cfg["train_ext"], shrink_k=cfg["shrink_k"],
-                shrink_below=cfg["shrink_below"], w_field=args.w_field, w_bryo=args.w_bryo, out=args.out)
+                shrink_below=cfg["shrink_below"], w_field=args.w_field, w_bryo=args.w_bryo,
+                extra_train=" ".join(args.extra_train), out=args.out)
     log.close()
 
 

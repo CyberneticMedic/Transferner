@@ -1,7 +1,9 @@
 """Cache frozen BioCLIP image embeddings for train/val/test (one pass; probe trains on these).
 
 Writes artifacts/img_emb/<split>.npy (float16, L2-normalized) and <split>.parquet
-(uuid, class_idx, is_specimen) in the same row order. Resumable per split."""
+(uuid, class_idx, is_specimen) in the same row order. Resumable per split.
+--phyla keeps only species of those phyla, e.g. the bryophyte rows of split `unused`
+(Phase B: `--splits unused --phyla Bryophyta Marchantiophyta --out artifacts/img_emb_unused_bryo`)."""
 from __future__ import annotations
 
 import argparse
@@ -40,6 +42,7 @@ def main() -> None:
     ap.add_argument("--out", default="artifacts/img_emb", help="relative to TRANSFERNER_DATA")
     ap.add_argument("--limit-per-split", type=int, default=0, help="smoke tests: first N rows per split")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--phyla", nargs="+", default=None, help="keep only species of these phyla")
     args = ap.parse_args()
 
     root = data_root()
@@ -48,6 +51,9 @@ def main() -> None:
     spl = pd.read_parquet(root / "manifests/splits.parquet")
     paths = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
     spl = spl.merge(paths, on="uuid")
+    if args.phyla:
+        sp = pd.read_parquet(root / "manifests/species.parquet")
+        spl = spl[spl.class_idx.isin(sp.loc[sp.phylum.isin(args.phyla), "class_idx"])]
     if args.splits is None:
         args.splits = [s for s in ("train", "val", "test", "train_ext", "val_ext") if (spl.split == s).any()]
     model, pre, _ = bioclip.load()

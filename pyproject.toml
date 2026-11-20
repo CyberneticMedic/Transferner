@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 lora   = ["peft"]
-boxes  = ["transformers"]            # OWLv2 / Grounding DINO pseudo-labelling
+boxes  = ["transformers", "pycocotools"]   # OWLv2 pseudo-labelling; COCO mAP for the detector
 yolo   = ["ultralytics"]             # AGPL-3.0 — comparison detector only
 # Export toolchains are kept in a SEPARATE venv (CPU torch); they pin torch
 # versions that clash with ROCm wheels.

@@ -78,3 +78,74 @@ def dmr(pred: np.ndarray, y: np.ndarray, toxic: np.ndarray, conf: np.ndarray | N
     sure = np.ones(len(y), bool) if tau is None else conf >= tau
     miss = ~toxic[pred] & sure
     return {"n": int(m.sum()), "dmr": float(miss[m].mean()), "coverage": float(sure[m].mean())}
+
+
+def box_iou_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """IoU matrix of xyxy boxes a (n, 4) and b (m, 4)."""
+    iw = np.clip(np.minimum(a[:, None, 2], b[None, :, 2]) - np.maximum(a[:, None, 0], b[None, :, 0]), 0, None)
+    ih = np.clip(np.minimum(a[:, None, 3], b[None, :, 3]) - np.maximum(a[:, None, 1], b[None, :, 1]), 0, None)
+    inter = iw * ih
+    area = lambda x: (x[:, 2] - x[:, 0]) * (x[:, 3] - x[:, 1])
+    return inter / (area(a)[:, None] + area(b)[None, :] - inter + 1e-12)
+
+
+def coco_map(det_img, det_cls, det_score, det_box, gt_img, gt_cls, gt_box,
+             thrs=np.linspace(0.5, 0.95, 10)) -> dict:
+    """COCO bbox AP without pycocotools' per-(image, class) Python loops, which take minutes at
+    1,362 classes. Same rules as COCOeval (area 'all', no crowd, maxDets not binding at <= 100 per
+    image): per image and class, detections in score order take the unmatched GT of the same class
+    with the highest IoU >= t; per class, precision is made monotone and read at 101 recall points;
+    classes without GT are skipped. Returns {'map': mean over t, 'ap50', 'ap75', 'per_class50'}."""
+    det_img, det_cls, gt_img, gt_cls = map(np.asarray, (det_img, det_cls, gt_img, gt_cls))
+    det_score, det_box, gt_box = np.asarray(det_score, float), np.asarray(det_box, float), np.asarray(gt_box, float)
+    T = len(thrs)
+    tp = np.zeros((T, len(det_img)), bool)
+    d_ord = np.lexsort((-det_score, det_img))                     # by image, then score (desc)
+    d_imgs, d_start = np.unique(det_img[d_ord], return_index=True)
+    d_end = np.append(d_start[1:], len(d_ord))
+    g_ord = np.argsort(gt_img, kind="stable")
+    g_imgs, g_start = np.unique(gt_img[g_ord], return_index=True)
+    g_end = np.append(g_start[1:], len(g_ord))
+    g_pos = dict(zip(g_imgs.tolist(), zip(g_start.tolist(), g_end.tolist())))
+    for im, s, e in zip(d_imgs.tolist(), d_start.tolist(), d_end.tolist()):
+        if im not in g_pos:
+            continue
+        d = d_ord[s:e]
+        g = g_ord[slice(*g_pos[im])]
+        iou = box_iou_np(det_box[d], gt_box[g])
+        iou[det_cls[d][:, None] != gt_cls[g][None, :]] = -1.0
+        cand = np.flatnonzero(iou.max(1) >= thrs[0])              # only these can ever be a TP
+        if len(cand) == 0:
+            continue
+        for t, thr in enumerate(thrs):
+            used = np.zeros(len(g), bool)
+            for k in cand:
+                row = np.where(used, -1.0, iou[k])
+                j = int(row.argmax())
+                if row[j] >= min(thr, 1 - 1e-10):
+                    used[j] = True
+                    tp[t, d[k]] = True
+    rec_thrs = np.linspace(0, 1, 101)
+    n_gt = np.bincount(gt_cls, minlength=max(gt_cls.max(), det_cls.max() if len(det_cls) else 0) + 1)
+    classes = np.flatnonzero(n_gt)
+    c_ord = np.lexsort((-det_score, det_cls))
+    c_vals, c_start = np.unique(det_cls[c_ord], return_index=True)
+    c_end = np.append(c_start[1:], len(c_ord))
+    c_pos = dict(zip(c_vals.tolist(), zip(c_start.tolist(), c_end.tolist())))
+    ap = np.zeros((T, len(classes)))
+    for ci, c in enumerate(classes.tolist()):
+        if c not in c_pos:
+            continue                                               # GT but no detections: AP 0
+        idx = c_ord[slice(*c_pos[c])]
+        for t in range(T):
+            tps = np.cumsum(tp[t, idx])
+            fps = np.cumsum(~tp[t, idx])
+            rc = tps / n_gt[c]
+            pr = tps / (tps + fps + np.spacing(1))
+            pr = np.maximum.accumulate(pr[::-1])[::-1]
+            pi = np.searchsorted(rc, rec_thrs, side="left")
+            ap[t, ci] = np.where(pi < len(pr), pr[np.minimum(pi, len(pr) - 1)], 0.0).mean()
+    i50 = int(np.argmin(np.abs(thrs - 0.5)))
+    i75 = int(np.argmin(np.abs(thrs - 0.75)))
+    return {"map": float(ap.mean()), "ap50": float(ap[i50].mean()), "ap75": float(ap[i75].mean()),
+            "per_class50": dict(zip(classes.tolist(), ap[i50].tolist()))}

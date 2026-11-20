@@ -77,7 +77,8 @@ def main() -> None:
     d = root / "artifacts/detector" / args.name
     labels = json.loads((d / "labels.json").read_text())
     ck = torch.load(d / args.ckpt, map_location="cpu")
-    model = build(len(labels["genera"]), cfg["model"]["backbone"], size, pretrained=False)
+    model = build(len(labels["genera"]), cfg["model"]["backbone"], size, pretrained=False,
+                  head=ck["args"].get("head", "ssdlite"), image_aux=ck["args"].get("aux_image", 0) > 0)
     model.load_state_dict(ck["model"])
     model.eval()
     genera, family_of, _, splits = load_items(root, args.boxes, ck["args"].get("fallback", "keep"), 0, args.seed)
@@ -88,7 +89,7 @@ def main() -> None:
     calib = pick(splits["train"], args.calib)
     mean = torch.tensor(model.backbone.mean).view(1, 3, 1, 1)
     std = torch.tensor(model.backbone.std).view(1, 3, 1, 1)
-    load_x = lambda items: torch.cat([((imgs.float() / 255) - mean) / std for imgs, _, _ in
+    load_x = lambda items: torch.cat([((imgs.float() / 255) - mean) / std for imgs, *_ in
                                       DataLoader(BoxSet(root, items, size, False), batch_size=32, num_workers=4,
                                                  collate_fn=collate)])
     dl = DataLoader(BoxSet(root, check, size, False), batch_size=16, num_workers=4, collate_fn=collate)

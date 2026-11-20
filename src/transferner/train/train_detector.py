@@ -83,13 +83,69 @@ class Backbone(nn.Module):
         return OrderedDict((str(i), f) for i, f in enumerate(feats))
 
 
-def build(n_genera: int, backbone: str, size: int, pretrained: bool = True) -> SSD:
+class SharedGenusHead(nn.Module):
+    """SSDLite head with the genus classifier factorised out (D-033). torchvision's SSDLite head has a
+    separate classifier per (level, anchor shape): 6 x 6 = 36 weight vectors per genus, each fed a sliver
+    of ~70 images per genus, and the large boxes that dominate here are classified from the randomly
+    initialised extra blocks. Here, per level, a depthwise 3x3 + 1x1 gives the background logit per anchor
+    (whether an anchor fits a box depends on its shape) and a depthwise 3x3 + 1x1 gives a shared-width
+    embedding per location; ONE 1x1 genus classifier is shared by all levels and anchors. Output layout
+    and loss are SSD's: (B, A, 1 + G) logits with the location's genus logits repeated over its anchors.
+    Background bias starts at P(background) = 0.99 (focal-loss prior), so early training is not swamped
+    by the 3:1 negatives."""
+
+    def __init__(self, in_channels: list[int], num_anchors: list[int], n_genera: int, norm, embed: int = 256,
+                 image_aux: bool = False):
+        super().__init__()
+        from torchvision.models.detection.ssdlite import SSDLiteRegressionHead
+        from torchvision.ops.misc import Conv2dNormActivation
+        dw = lambda c: Conv2dNormActivation(c, c, kernel_size=3, groups=c, norm_layer=norm,
+                                            activation_layer=nn.ReLU6)
+        self.num_anchors = num_anchors
+        self.regression_head = SSDLiteRegressionHead(in_channels, num_anchors, norm)
+        self.bg = nn.ModuleList(nn.Sequential(dw(c), nn.Conv2d(c, a, 1)) for c, a in zip(in_channels, num_anchors))
+        self.embed = nn.ModuleList(
+            nn.Sequential(dw(c), Conv2dNormActivation(c, embed, kernel_size=1, norm_layer=norm,
+                                                      activation_layer=nn.ReLU6)) for c in in_channels)
+        self.genus = nn.Conv2d(embed, n_genera, 1)
+        # Image-level branch (--aux-image): global-pooled stride-32 features -> same embedding width -> the
+        # SAME genus classifier, trained on the photo's genus. Every photo supervises the classifier every
+        # step, and it is a cheap whole-frame genus readout (pool + 1x1), NPU-friendly.
+        self.image_embed = nn.Sequential(nn.AdaptiveAvgPool2d(1), Conv2dNormActivation(
+            in_channels[1], embed, kernel_size=1, norm_layer=None, activation_layer=nn.ReLU6)) if image_aux else None
+        _normal_init(self.bg)
+        _normal_init(self.embed)
+        nn.init.normal_(self.genus.weight, std=0.01)
+        nn.init.zeros_(self.genus.bias)
+        for s in self.bg:
+            nn.init.constant_(s[-1].bias, math.log(n_genera) + math.log(99.0))
+
+    def forward(self, feats: list[torch.Tensor]) -> dict[str, torch.Tensor]:
+        logits = []
+        for f, bg, em, a in zip(feats, self.bg, self.embed, self.num_anchors):
+            b = bg(f)                                                    # (B, a, H, W)
+            g = self.genus(em(f))                                        # (B, G, H, W)
+            B, G, H, W = g.shape
+            b = b.permute(0, 2, 3, 1).reshape(B, H * W, a, 1)
+            g = g.permute(0, 2, 3, 1).reshape(B, H * W, 1, G).expand(B, H * W, a, G)
+            logits.append(torch.cat([b, g], -1).reshape(B, H * W * a, G + 1))
+        out = {"bbox_regression": self.regression_head(feats), "cls_logits": torch.cat(logits, 1)}
+        if self.image_embed is not None:
+            out["image_logits"] = self.genus(self.image_embed(feats[1])).flatten(1)     # (B, G)
+        return out
+
+
+def build(n_genera: int, backbone: str, size: int, pretrained: bool = True, head: str = "ssdlite",
+          image_aux: bool = False) -> SSD:
     norm = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
     body = Backbone(backbone, pretrained, norm)
     anchors = DefaultBoxGenerator([[2, 3] for _ in range(6)], min_ratio=0.2, max_ratio=0.95)
-    head = SSDLiteHead(body.out_channels, anchors.num_anchors_per_location(), n_genera + 1, norm)
+    if head == "shared":
+        h = SharedGenusHead(body.out_channels, anchors.num_anchors_per_location(), n_genera, norm, image_aux=image_aux)
+    else:
+        h = SSDLiteHead(body.out_channels, anchors.num_anchors_per_location(), n_genera + 1, norm)
     return SSD(body, anchors, (size, size), n_genera + 1, image_mean=list(body.mean), image_std=list(body.std),
-               head=head)
+               head=h)
 
 
 class ShiftAddDepthwise(nn.Conv2d):
@@ -305,12 +361,13 @@ class BoxSet(Dataset):
         img = img.as_subclass(torch.Tensor)
         if self.train:
             img = field_degrade(img, self.size)
-        return img, tgt["boxes"].as_subclass(torch.Tensor).float(), tgt["labels"].long()
+        return img, tgt["boxes"].as_subclass(torch.Tensor).float(), tgt["labels"].long(), int(lab[0])
 
 
 def collate(batch):
-    imgs, boxes, labels = zip(*batch)
-    return torch.stack(imgs), list(boxes), list(labels)
+    """-> uint8 images (B, 3, S, S), per-image boxes and labels (1 + genus), image genus label (B,) (1 + genus)."""
+    imgs, boxes, labels, genus = zip(*batch)
+    return torch.stack(imgs), list(boxes), list(labels), torch.tensor(genus)
 
 
 def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int):
@@ -375,12 +432,20 @@ def evaluate_with(run, box_coder, loader, anchors0, size, family_of, dev, mean, 
     adets = {k: [] for k in ("img", "score", "box")}
     gts = {k: [] for k in ("img", "cls", "box")}
     top1 = top5 = fam1 = n = 0
+    itop1 = itop5 = ifam1 = 0
     fam_t = torch.as_tensor(family_of, device=dev)
     n_fam = int(family_of.max()) + 1
-    for imgs, boxes, labels in loader:
+    for imgs, boxes, labels, genus in loader:
         x = ((imgs.to(dev, non_blocking=True).float() / 255) - mean) / std
-        res, dist = detect(box_coder, run(x), anchors0, size)
-        y = torch.stack([lab[0] for lab in labels]).to(dev) - 1                # image genus
+        out = run(x)
+        res, dist = detect(box_coder, out, anchors0, size)
+        y = genus.to(dev) - 1                                                  # image genus
+        if "image_logits" in out:
+            ip = out["image_logits"].float().softmax(-1)
+            itop1 += int((ip.argmax(1) == y).sum())
+            itop5 += int((ip.topk(5, 1).indices == y[:, None]).any(1).sum())
+            ifd = torch.zeros(len(y), n_fam, device=dev).index_add_(1, fam_t, ip)
+            ifam1 += int((ifd.argmax(1) == fam_t[y]).sum())
         top1 += int((dist.argmax(1) == y).sum())
         top5 += int((dist.topk(5, 1).indices == y[:, None]).any(1).sum())
         fd = torch.zeros(len(y), n_fam, device=dev).index_add_(1, fam_t, dist)
@@ -399,9 +464,11 @@ def evaluate_with(run, box_coder, loader, anchors0, size, family_of, dev, mean, 
     m = coco_map(dets["img"], dets["cls"], dets["score"], dets["box"], gts["img"], gts["cls"], gts["box"])
     ma = coco_map(adets["img"], np.zeros(len(adets["img"]), int), adets["score"], adets["box"],
                   gts["img"], np.zeros(len(gts["img"]), int), gts["box"])
-    return {"map": m["map"], "ap50": m["ap50"], "ap75": m["ap75"], "agnostic_ap50": ma["ap50"],
-            "agnostic_map": ma["map"], "genus_top1": top1 / n, "genus_top5": top5 / n, "family_top1": fam1 / n,
-            "n_images": n}
+    res = {"map": m["map"], "ap50": m["ap50"], "ap75": m["ap75"], "agnostic_ap50": ma["ap50"],
+           "agnostic_map": ma["map"], "genus_top1": top1 / n, "genus_top5": top5 / n, "family_top1": fam1 / n}
+    if itop1 or itop5 or ifam1:
+        res.update(image_genus_top1=itop1 / n, image_genus_top5=itop5 / n, image_family_top1=ifam1 / n)
+    return {**res, "n_images": n}
 
 
 # ----------------------------------------------------------------------------------------- train
@@ -425,6 +492,12 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=20)
     ap.add_argument("--channels-last", action=argparse.BooleanOptionalAction, default=False)
     ap.add_argument("--no-pretrained", action="store_true")
+    ap.add_argument("--head", choices=["ssdlite", "shared"], default=cfg["model"].get("head", "ssdlite"),
+                    help="ssdlite: torchvision's per-(level, anchor) classifiers; shared: one genus classifier (D-033)")
+    ap.add_argument("--aux-image", type=float, default=0.0,
+                    help="weight of the image-level genus loss through the shared classifier (needs --head shared)")
+    ap.add_argument("--stop-after", type=int, default=0,
+                    help="A/B screens: run only the first N epochs of the full schedule; no test pass, no summary row")
     ap.add_argument("--dw-impl", choices=["shift", "miopen"], default="shift",
                     help="depthwise convs as fused shift-and-add (needs --compile to be fast) or MIOpen's kernels")
     ap.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
@@ -454,7 +527,10 @@ def main() -> None:
     dl_train = mk(train, True, sampler=sampler, drop_last=True)
     dl_val = mk(splits["val"], False)
 
-    model = build(len(genera), cfg["model"]["backbone"], size, pretrained=not args.no_pretrained).to(dev)
+    if args.aux_image and args.head != "shared":
+        ap.error("--aux-image needs --head shared")
+    model = build(len(genera), cfg["model"]["backbone"], size, pretrained=not args.no_pretrained,
+                  head=args.head, image_aux=args.aux_image > 0).to(dev)
     n_dw = use_shift_add_depthwise(model) if args.dw_impl == "shift" else 0
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
@@ -494,8 +570,10 @@ def main() -> None:
     best, best_ep, step = -1.0, -1, 0
     t_start = time.time()
     for ep in range(args.epochs):
+        if args.stop_after and ep >= args.stop_after:
+            break
         t0, seen, sums = time.time(), 0, torch.zeros(2, device=dev)
-        for it, (imgs, boxes, labels) in enumerate(dl_train):
+        for it, (imgs, boxes, labels, genus) in enumerate(dl_train):
             if it >= steps_per_epoch:
                 break
             x = ((imgs.to(dev, non_blocking=True).float() / 255) - mean) / std
@@ -507,6 +585,9 @@ def main() -> None:
                 out = forward_raw(net, x)
             l_box, l_cls = ssd_loss_batched(model, out, anchors0, targets)
             loss = l_box + l_cls
+            if "image_logits" in out:
+                l_img = F.cross_entropy(out["image_logits"].float(), genus.to(dev, non_blocking=True) - 1)
+                loss = loss + args.aux_image * l_img
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
@@ -518,13 +599,14 @@ def main() -> None:
             seen += len(imgs)
             sums += torch.stack([l_box.detach(), l_cls.detach()])
             if it % 200 == 0:
-                print(f"ep {ep} it {it}/{steps_per_epoch} box {l_box.item():.3f} cls {l_cls.item():.3f} "
+                extra = f" img {l_img.item():.3f}" if "image_logits" in out else ""
+                print(f"ep {ep} it {it}/{steps_per_epoch} box {l_box.item():.3f} cls {l_cls.item():.3f}{extra} "
                       f"lr {sched.get_last_lr()[0]:.2e} {seen / (time.time() - t0):.0f} img/s", flush=True)
         n_it = it + (it < steps_per_epoch)
         sums = (sums / max(1, n_it)).tolist()
         log.log(ep, "train", loss_box=sums[0], loss_cls=sums[1], img_s=seen / (time.time() - t0))
         torch.save({"model": model.state_dict(), "epoch": ep, "args": vars(args)}, out_dir / "last.pt")
-        if (ep + 1) % args.eval_every == 0 or ep == args.epochs - 1:
+        if (ep + 1) % args.eval_every == 0 or ep == args.epochs - 1 or ep == args.stop_after - 1:
             m = evaluate(model, net, dl_val, anchors0, size, family_of, dev, mean, std, args.channels_last, amp)
             log.log(ep, "val", **m)
             print(f"ep {ep} val " + " ".join(f"{k} {v:.4f}" for k, v in m.items() if k != "n_images") +
@@ -534,6 +616,10 @@ def main() -> None:
                 torch.save({"model": model.state_dict(), "epoch": ep, "args": vars(args), "val": m},
                            out_dir / "best.pt")
 
+    if args.stop_after:                          # A/B screen: selection data only, test stays untouched
+        print(f"stopped after {args.stop_after} epochs; best val ap50 {best:.4f} at epoch {best_ep}", flush=True)
+        log.close()
+        return
     ck = torch.load(out_dir / "best.pt", map_location=dev)
     model.load_state_dict(ck["model"])
     val = ck["val"]

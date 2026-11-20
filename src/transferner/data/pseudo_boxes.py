@@ -14,8 +14,9 @@ OWLv2 pads each image to a square (bottom/right) before resizing to 960, so its 
 to the padded square; they are mapped back to the original image here and clipped to [0, 1].
 
 Writes manifests/boxes.parquet: uuid, split, class_idx, genus, family, x0, y0, x1, y1 (fractions of
-the original image width/height), score, prompt, fallback. Resumable: each --chunk of images is kept
-as <parts>/part-NNNNN.parquet and skipped on restart.
+the original image width/height), score, prompt, fallback. Resumable: labelled images are kept in
+<parts>/part-NNNNN.parquet (--chunk images each); a restart, or a larger --per-genus, labels only the
+selected images that no part holds yet.
 
 boxes.parquet stays raw. `drop_nested()` is the training-time cleanup for the part-agnostic
 detector (D-015): it drops boxes that sit >= 90% inside a larger box of the same image. On the
@@ -132,7 +133,7 @@ def main() -> None:
     cfg = load("detector")["labels"]
     ap = argparse.ArgumentParser()
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
-    ap.add_argument("--per-genus", type=int, default=20, help="images per genus (0 = all)")
+    ap.add_argument("--per-genus", type=int, default=100, help="images per genus (0 = all)")
     ap.add_argument("--limit", type=int, default=0, help="smoke tests: first N selected images")
     ap.add_argument("--min-score", type=float, default=cfg["min_box_score"])
     ap.add_argument("--iou", type=float, default=0.5)
@@ -162,12 +163,16 @@ def main() -> None:
 
     parts = root / args.parts
     parts.mkdir(parents=True, exist_ok=True)
+    # Resume by uuid, not by position: a larger --per-genus later labels only the new images.
+    existing = sorted(parts.glob("part-*.parquet"))
+    seen = set().union(*(set(pd.read_parquet(p, columns=["uuid"]).uuid) for p in existing)) if existing else set()
+    todo = rows[~rows.uuid.isin(seen)].reset_index(drop=True)
+    first = 1 + max((int(p.stem.split("-")[1]) for p in existing), default=-1)
+    print(f"{len(rows) - len(todo):,} already labelled in {parts}, {len(todo):,} to go", flush=True)
     t0, done = time.time(), 0
-    for c0 in range(0, len(rows), args.chunk):
-        part = parts / f"part-{c0 // args.chunk:05d}.parquet"
-        if part.exists():
-            continue
-        chunk = rows.iloc[c0:c0 + args.chunk].reset_index(drop=True)
+    for k, c0 in enumerate(range(0, len(todo), args.chunk)):
+        part = parts / f"part-{first + k:05d}.parquet"
+        chunk = todo.iloc[c0:c0 + args.chunk].reset_index(drop=True)
         dl = DataLoader(Images(root, chunk.path, proc.image_processor), batch_size=args.batch,
                         num_workers=args.workers, pin_memory=args.device.startswith("cuda"))
         out, j = [], 0
@@ -189,9 +194,11 @@ def main() -> None:
                     "prompt": "full_frame" if fb else [prompts[k] for k in lab], "fallback": fb}))
                 j += 1
             done += n
-        pd.concat(out, ignore_index=True).to_parquet(part, index=False)
+        tmp = part.with_suffix(".tmp")
+        pd.concat(out, ignore_index=True).to_parquet(tmp, index=False)
+        tmp.rename(part)                                     # a killed run never leaves a half-written part
         rate = done / (time.time() - t0)
-        print(f"{part.name}: {min(c0 + args.chunk, len(rows)):,}/{len(rows):,} images ({rate:.1f} img/s)", flush=True)
+        print(f"{part.name}: {min(c0 + args.chunk, len(todo)):,}/{len(todo):,} images ({rate:.1f} img/s)", flush=True)
 
     boxes = pd.concat([pd.read_parquet(p) for p in sorted(parts.glob("part-*.parquet"))], ignore_index=True)
     boxes = boxes[boxes.uuid.isin(rows.uuid)].reset_index(drop=True)

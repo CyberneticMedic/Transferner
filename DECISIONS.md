@@ -114,3 +114,31 @@ Newest at the bottom. Format: ID · date · decision · why.
     - On-device top-1 and DMR for each shipped variant.
     - Energy per identification.
     None of these can be measured on this machine; x86 timings are proxies only.
+- **D-033 · 2026-11-20 · Live detector: pseudo-box training data and recipe (Phase D).**
+  - **Labels:** OWLv2 (`google/owlv2-base-patch16-ensemble`, Apache-2.0) over at most 100 non-specimen photos per genus (D-020), taken from BioCLIP's train/val/test. Each photo keeps its observation-grouped split.
+    - That gives 132,302 photos, 1,359 genera with train boxes (309 families) and 199,073 raw boxes.
+    - The planned 20 per genus would have left about 14 training photos per class.
+    - 31.6% of photos get no box and carry one full-frame box instead: mosses 57%, liverworts 64%, vascular plants 27%. These are mostly frame-filling subjects.
+    - `drop_nested()` removes part boxes inside a whole-plant box at load, taking boxes per photo from 1.75 to 1.35.
+    - Box AP on val/test measures agreement with OWLv2 plus the genus label, not field accuracy. The real test is still the field video set (D-018).
+  - **Head: one shared genus classifier** (`model.head: shared`) instead of torchvision's SSDLite head, which has a separate classifier per (level, anchor shape): 36 weight vectors per genus, each fed a sliver of about 70 photos.
+    - Background is still scored per anchor; genus is scored per location from a 256-d embedding through one 1×1 classifier. Output layout and loss are unchanged.
+    - Size: 9.1M parameters against 23.7M, and a much cheaper head at 1,359 classes.
+    - Evidence, all at backbone lr 2e-3 (before the fix below): the stock head stalled at 0.6% val genus top-1 after 4 epochs. At epoch 1 the shared head reached top-1 0.35% and top-5 1.6%, against the stock head's 0.20% and 0.85%.
+    - The two heads were not re-compared at the final learning rate.
+  - **Image-level auxiliary loss** (`aux_image: 1.0`): globally pooled stride-32 features go through the same genus classifier, trained on the photo's genus. Every photo supervises the classifier every step. It also gives a cheap whole-frame genus readout (pool + 1×1).
+  - **Backbone learning rate is the decisive setting** (`backbone_lr_mult: 0.03`, so 6e-5 for the pretrained MNv4 layers and 2e-3 for new layers).
+    - At 2e-3 everywhere, image-level genus top-1 was 0.95% after 2 epochs.
+    - A linear probe on *frozen* ImageNet MNv4 features through the same data path reaches 20.4% on clean training views and 14.7% on augmented ones. So the labels are right, and the field augmentation costs about a quarter of the accuracy but is not the problem.
+    - Screens on the first 2 of 60 epochs, epoch-1 val, selected on genus AP50:
+      - ×0.1: AP50 0.040, image genus top-1 13.3%, box genus top-1 3.8%.
+      - **×0.03: AP50 0.051, 17.0%, 2.8%.**
+    - Short screens favour lower rates, which is noted but not corrected for.
+  - **Training:** 60 epochs, batch 64, AdamW, weight decay 0.05, 1,000-step warmup then cosine. The sampler weights each photo by (train photos of its genus)^-0.5. Field augmentation: SSD photometric distortion, zoom-out up to 3×, IoU crop, flip, then downscale-upscale, motion blur and JPEG at 320 px. The epoch is selected on val genus AP50 and test is run once.
+  - **Engineering:** on this ROCm stack, MIOpen runs depthwise convs through per-group Winograd or naive kernels.
+    - Depthwise convs are shift-and-add under `torch.compile`. The state_dict is unchanged and outputs and gradients match to 1e-13. Training goes from 239 to 393 img/s at batch 64 on an otherwise idle GPU, about 456 img/s in the real run.
+    - The SSD loss is vectorized over the batch (identical to torchvision's, 87 → 30 ms).
+    - Postprocessing is our own top-k plus NMS, because torchvision loops over every class. Objectness is 1 − P(background); the best single genus probability as the score gave class-agnostic AP50 0.045 instead of 0.408.
+    - `coco_map` matches pycocotools to 1e-6 (`tests/test_coco_map.py`).
+    - Triton needs Python.h, which comes from a uv-managed CPython 3.12. No sudo, nothing system-wide.
+  - **Export** (`export/detector_litert.py`, CPU venv): backbone and head go to LiteRT; softmax, decoding and NMS stay app-side. FP32 is exact. Full INT8 PT2E (per-channel weights, per-tensor activations, BatchNorm folded) converts, and its input and outputs are INT8. On the smoke checkpoint it is 24.9 MB and 4.1 ms on 4 x86 threads. PTQ and QAT numbers on the trained model are still to come (D-011).

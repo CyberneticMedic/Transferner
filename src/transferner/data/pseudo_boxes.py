@@ -133,7 +133,7 @@ def main() -> None:
     cfg = load("detector")["labels"]
     ap = argparse.ArgumentParser()
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
-    ap.add_argument("--per-genus", type=int, default=100, help="images per genus (0 = all)")
+    ap.add_argument("--per-genus", type=int, default=cfg.get("per_genus", 100), help="images per genus (0 = all)")
     ap.add_argument("--limit", type=int, default=0, help="smoke tests: first N selected images")
     ap.add_argument("--min-score", type=float, default=cfg["min_box_score"])
     ap.add_argument("--iou", type=float, default=0.5)

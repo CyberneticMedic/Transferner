@@ -3,6 +3,7 @@ model:
   arch: ssdlite                 # primary; alt: yolo (comparison, Ultralytics AGPL)
   backbone: mobilenetv4_conv_medium.e500_r256_in1k   # timm
   input: 320                    # square, NPU-friendly static shape
+  head: shared                  # one genus classifier shared by all levels/anchors (D-033); ssdlite = torchvision's
   heads:
     genus: true                 # detection classes = genera
     family: rollup              # family score = sum of member-genus scores (no extra head)
@@ -12,11 +13,16 @@ labels:
   pseudo_labeler: google/owlv2-base-patch16-ensemble
   prompts: [a plant, a leaf, a flower, a fruit, a tree trunk, a vine]
   min_box_score: 0.25
+  per_genus: 100                # images per genus (non-specimen, train/val/test) -> 132,302 images (D-033)
 train:
   epochs: 60
   batch: 64
-  lr: 2.0e-3
+  lr: 2.0e-3                    # new layers (extras + head)
+  backbone_lr_mult: 0.03        # pretrained MNv4 layers at 6e-5: 2e-3 wiped their genus features (D-033)
+  weight_decay: 0.05
+  aux_image: 1.0                # image-level genus loss through the shared classifier (D-033)
   sampler: class_balanced
+  sampler_power: 0.5            # image weight = (train images of its genus)^-0.5
   aug: field                    # heavy: random-resized-crop, motion blur, downscale, color jitter
 quant:
   ptq: true

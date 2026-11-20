@@ -496,7 +496,7 @@ def main() -> None:
                     help="ssdlite: torchvision's per-(level, anchor) classifiers; shared: one genus classifier (D-033)")
     ap.add_argument("--backbone-lr-mult", type=float, default=tc.get("backbone_lr_mult", 1.0),
                     help="lr of the pretrained MNv4 layers = lr x this (new extras and head: lr)")
-    ap.add_argument("--aux-image", type=float, default=0.0,
+    ap.add_argument("--aux-image", type=float, default=tc.get("aux_image", 0.0),
                     help="weight of the image-level genus loss through the shared classifier (needs --head shared)")
     ap.add_argument("--stop-after", type=int, default=0,
                     help="A/B screens: run only the first N epochs of the full schedule; no test pass, no summary row")

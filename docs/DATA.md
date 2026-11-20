@@ -19,7 +19,7 @@
 | species.parquet | class_idx | accepted name, gbif_taxon_key, genus, family, is_toxic, is_lookalike, has_traits, n_regional |
 | images.parquet | uuid | source, source_id/gbifID, observation_id, path, organ, eventDate, state, license, rights_holder, phash, in_tol |
 | splits.parquet | uuid | split ∈ train/val/test/unused, plus val_ext/train_ext for gbif_external rows (D-026) |
-| boxes.parquet | uuid, box_idx | x0,y0,x1,y1 (normalised), score, genus_idx |
+| boxes.parquet | uuid (several rows per image) | OWLv2 pseudo-boxes for the detector (`data/pseudo_boxes`, D-033): split (BioCLIP's), class_idx, genus, family, x0,y0,x1,y1 (fractions of the original image), score, prompt, fallback (no box found: one full-frame box). ≤ 100 non-specimen images per genus from train/val/test. Raw labeller output; the trainer applies `drop_nested()` |
 | priors_state_month.parquet | taxon_key, state, month | count |
 
 ## Leakage control

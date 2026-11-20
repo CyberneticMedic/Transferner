@@ -221,7 +221,7 @@ def ssd_loss(model: SSD, out, anchors, targets):
 
 
 @torch.no_grad()
-def detect(model: SSD, out, anchors0: torch.Tensor, size: int, topk: int = 300, max_det: int = 100,
+def detect(box_coder, out, anchors0: torch.Tensor, size: int, topk: int = 300, max_det: int = 100,
            thresh: float = 0.01, iou: float = 0.55):
     """Per image: class-aware detections (top-k anchor x genus pairs -> class-wise NMS), class-agnostic
     detections scored by objectness 1 - P(background) (NMS), and the genus distribution (normalised over
@@ -230,7 +230,7 @@ def detect(model: SSD, out, anchors0: torch.Tensor, size: int, topk: int = 300, 
     full = out["cls_logits"].float().softmax(-1)
     probs = full[..., 1:]                                                # (B, A, G), background dropped
     B, A, G = probs.shape
-    boxes = model.box_coder.decode_single(out["bbox_regression"].float().reshape(-1, 4),
+    boxes = box_coder.decode_single(out["bbox_regression"].float().reshape(-1, 4),
                                           anchors0.repeat(B, 1)).reshape(B, A, 4).clamp(0, size)
     best = 1.0 - full[..., 0]                                            # objectness (B, A)
     top_anchor = best.argmax(1)
@@ -352,9 +352,25 @@ def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int):
 
 
 # ------------------------------------------------------------------------------------------ eval
-@torch.no_grad()
 def evaluate(model, net, loader, anchors0, size, family_of, dev, mean, std, channels_last, amp) -> dict:
+    """Score the (compiled) PyTorch model; see evaluate_with."""
     model.eval()
+
+    def run(x):
+        if channels_last:
+            x = x.contiguous(memory_format=torch.channels_last)
+        with amp:
+            return forward_raw(net, x)
+    try:
+        return evaluate_with(run, model.box_coder, loader, anchors0, size, family_of, dev, mean, std)
+    finally:
+        model.train()
+
+
+@torch.no_grad()
+def evaluate_with(run, box_coder, loader, anchors0, size, family_of, dev, mean, std) -> dict:
+    """run(x) -> {'bbox_regression', 'cls_logits'} for normalised (B, 3, S, S) input on dev: the PyTorch
+    model, a PT2E-quantized graph or a LiteRT interpreter, all scored by the same postprocessing and metrics."""
     dets = {k: [] for k in ("img", "cls", "score", "box")}
     adets = {k: [] for k in ("img", "score", "box")}
     gts = {k: [] for k in ("img", "cls", "box")}
@@ -363,11 +379,7 @@ def evaluate(model, net, loader, anchors0, size, family_of, dev, mean, std, chan
     n_fam = int(family_of.max()) + 1
     for imgs, boxes, labels in loader:
         x = ((imgs.to(dev, non_blocking=True).float() / 255) - mean) / std
-        if channels_last:
-            x = x.contiguous(memory_format=torch.channels_last)
-        with amp:
-            out = forward_raw(net, x)
-        res, dist = detect(model, out, anchors0, size)
+        res, dist = detect(box_coder, run(x), anchors0, size)
         y = torch.stack([lab[0] for lab in labels]).to(dev) - 1                # image genus
         top1 += int((dist.argmax(1) == y).sum())
         top5 += int((dist.topk(5, 1).indices == y[:, None]).any(1).sum())
@@ -387,7 +399,6 @@ def evaluate(model, net, loader, anchors0, size, family_of, dev, mean, std, chan
     m = coco_map(dets["img"], dets["cls"], dets["score"], dets["box"], gts["img"], gts["cls"], gts["box"])
     ma = coco_map(adets["img"], np.zeros(len(adets["img"]), int), adets["score"], adets["box"],
                   gts["img"], np.zeros(len(gts["img"]), int), gts["box"])
-    model.train()
     return {"map": m["map"], "ap50": m["ap50"], "ap75": m["ap75"], "agnostic_ap50": ma["ap50"],
             "agnostic_map": ma["map"], "genus_top1": top1 / n, "genus_top5": top5 / n, "family_top1": fam1 / n,
             "n_images": n}

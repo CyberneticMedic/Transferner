@@ -494,6 +494,8 @@ def main() -> None:
     ap.add_argument("--no-pretrained", action="store_true")
     ap.add_argument("--head", choices=["ssdlite", "shared"], default=cfg["model"].get("head", "ssdlite"),
                     help="ssdlite: torchvision's per-(level, anchor) classifiers; shared: one genus classifier (D-033)")
+    ap.add_argument("--backbone-lr-mult", type=float, default=tc.get("backbone_lr_mult", 1.0),
+                    help="lr of the pretrained MNv4 layers = lr x this (new extras and head: lr)")
     ap.add_argument("--aux-image", type=float, default=0.0,
                     help="weight of the image-level genus loss through the shared classifier (needs --head shared)")
     ap.add_argument("--stop-after", type=int, default=0,
@@ -541,10 +543,12 @@ def main() -> None:
     n_params = sum(p.numel() for p in model.parameters())
     mean = torch.tensor(model.backbone.mean, device=dev).view(1, 3, 1, 1)
     std = torch.tensor(model.backbone.std, device=dev).view(1, 3, 1, 1)
-    decay = [p for n, p in model.named_parameters() if p.ndim > 1]
-    no_decay = [p for n, p in model.named_parameters() if p.ndim <= 1]
-    opt = torch.optim.AdamW([{"params": decay, "weight_decay": args.wd}, {"params": no_decay, "weight_decay": 0}],
-                            lr=args.lr)
+    groups = {}                                  # (pretrained backbone?, decay?) -> params
+    for n, p in model.named_parameters():
+        groups.setdefault((n.startswith("backbone.body."), p.ndim > 1), []).append(p)
+    opt = torch.optim.AdamW([{"params": ps, "weight_decay": args.wd if dec else 0.0,
+                              "lr": args.lr * (args.backbone_lr_mult if pre else 1.0)}
+                             for (pre, dec), ps in groups.items()], lr=args.lr)
     steps_per_epoch = min(len(dl_train), args.max_steps or len(dl_train))
     total = args.epochs * steps_per_epoch
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup) *
@@ -601,7 +605,7 @@ def main() -> None:
             if it % 200 == 0:
                 extra = f" img {l_img.item():.3f}" if "image_logits" in out else ""
                 print(f"ep {ep} it {it}/{steps_per_epoch} box {l_box.item():.3f} cls {l_cls.item():.3f}{extra} "
-                      f"lr {sched.get_last_lr()[0]:.2e} {seen / (time.time() - t0):.0f} img/s", flush=True)
+                      f"lr {max(sched.get_last_lr()):.2e} {seen / (time.time() - t0):.0f} img/s", flush=True)
         n_it = it + (it < steps_per_epoch)
         sums = (sums / max(1, n_it)).tolist()
         log.log(ep, "train", loss_box=sums[0], loss_cls=sums[1], img_s=seen / (time.time() - t0))

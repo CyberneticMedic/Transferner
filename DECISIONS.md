@@ -285,3 +285,4 @@ Newest at the bottom. Format: ID · date · decision · why.
     - **The cause:** the retrained backbone's INT8 features.
     - **Fixes:** QAT (D-011), or run the float graph on the Moto's CPU through XNNPACK in FP16. Its latency is not measured: an estimated 1.5–2.5× the INT8 model, inside the user's 200 ms budget.
   - **Staged, not published:** bundle 0.4 = `mnv4_live` INT8 (`detector_app_int8`, 14.0 MB) plus the same `focus.json`; a phone on 0.3 would fetch about 15 MB. `latest.json` stays at 0.3 until the user asks (they said the model can be updated later). `export/bundle.py --no-publish` builds without publishing.
+  - **Published 2026-11-24 at the user's request:** `latest.json` → bundle 0.4 (`mnv4_live` INT8). The 0.3 pointer is kept in the session scratchpad; reverting means writing `{"version": "0.3", "manifest": "0.3/manifest.json"}` back to `$TRANSFERNER_DATA/bundle/latest.json`.

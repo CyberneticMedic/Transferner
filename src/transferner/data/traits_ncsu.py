@@ -9,7 +9,8 @@ second with the project User-Agent. Only factual fields are kept (poison severit
 parts, contact dermatitis, edible plant type/tags), each with its page URL as the citation.
 
 A species matches a page when its accepted name or one of its GBIF synonyms slugifies to a
-sitemap slug ("Phytolacca americana" -> phytolacca-americana). Cultivar pages are not used.
+sitemap slug ("Phytolacca americana" -> phytolacca-americana), and synonyms pass synonym_guard (no other
+label species' name, no GBIF homonym; audit 2026-11-24). Cultivar pages are not used.
 Species with no page of their own fall back to their genus page (/plants/rubus/) when one
 exists; such rows are marked level=genus and traits_build treats them conservatively.
 traits_build turns the parsed fields into data/traits/species_traits.csv rows."""
@@ -25,6 +26,7 @@ import pandas as pd
 
 from ..utils.config import data_root
 from ..utils.http import session
+from .synonym_guard import SynonymGuard
 
 BASE = "https://plants.ces.ncsu.edu"
 
@@ -49,33 +51,50 @@ def sitemap_slugs() -> set[str]:
 
 
 def targets() -> pd.DataFrame:
-    """Label-set species with a toolbox page, in Phase C priority order."""
+    """Label-set species with a toolbox page, in Phase C priority order.
+
+    A synonym's page is used only when synonym_guard accepts it (audit data_domain-02; errors_found "Trait rows
+    are matched through synonyms ..."): never the accepted name of another label species (Trautvetteria took
+    goldenseal's toxic rows, Solidago tortifolia S. odora's edible row), never a bare name GBIF's strict match
+    resolves to another ACCEPTED species (Ptilimnium capillaceum took the Ammi majus L. page). A species whose
+    synonyms are all rejected falls back to its genus page like any species without a page of its own.
+    Rejections are written to raw/ncsu/synonym_rejections.csv."""
     sp = pd.read_parquet(data_root() / "manifests/species.parquet")
     slugs = sitemap_slugs()
+    guard = SynonymGuard(sp)
     rows = []
     for r in sp.itertuples():
-        names = [r.scientific_name] + [s for s in r.synonyms if s]
         base = {"class_idx": r.class_idx, "scientific_name": r.scientific_name, "gbif_taxon_key": r.gbif_taxon_key,
                 "priority": int(r.must_include or r.is_lookalike or r.is_toxic), "n_regional": r.n_regional}
-        hit = next((n for n in names if slug(n) in slugs), None)
+        hit = r.scientific_name if slug(r.scientific_name) in slugs else next(
+            (s for s in r.synonyms if s and slug(s) in slugs
+             and not guard.reject(r.gbif_taxon_key, r.scientific_name, s)), None)
         if hit:
             rows.append({**base, "page_name": hit, "slug": slug(hit), "level": "species"})
         elif isinstance(r.genus, str) and slug(r.genus) in slugs:
             rows.append({**base, "page_name": r.genus, "slug": slug(r.genus), "level": "genus"})
+    rej = pd.DataFrame(guard.log, columns=["gbif_taxon_key", "scientific_name", "synonym", "reason"])
+    rej.to_csv(out_dir() / "synonym_rejections.csv", index=False)
+    print(f"synonym pages rejected: {len(rej)} ({rej.reason.str.startswith('accepted name').sum()} label species, "
+          f"{rej.reason.str.startswith('GBIF').sum()} GBIF homonyms) -> raw/ncsu/synonym_rejections.csv", flush=True)
     t = pd.DataFrame(rows)
     return t.sort_values(["priority", "n_regional"], ascending=False).reset_index(drop=True)
 
 
-def fetch(min_gap: float = 1.0) -> None:
+def fetch(min_gap: float = 1.0, retry_404: bool = False) -> None:
     t = targets()
     d = out_dir()
     t.to_parquet(d / "targets.parquet", index=False)
     log_p = d / "fetch_log.tsv"
+    # slugs the site already answered 404 for (genus slugs the sitemap lists without a page); re-requesting
+    # them on every run only costs the site requests, so they are skipped unless --retry-404
+    gone = set() if retry_404 or not log_p.exists() else {
+        ln.split("\t")[1] for ln in log_p.read_text().splitlines() if ln.count("\t") == 2 and ln.split("\t")[2] == "404"}
     s = session()
     last, n_new = 0.0, 0
     for i, r in enumerate(t.itertuples()):
         p = d / "pages" / f"{r.slug}.html"
-        if p.exists():
+        if p.exists() or r.slug in gone:
             continue
         wait = min_gap - (time.monotonic() - last)
         if wait > 0:
@@ -152,8 +171,9 @@ def parse() -> pd.DataFrame:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["fetch", "parse"])
+    ap.add_argument("--retry-404", action="store_true", help="also re-request slugs the log records as 404")
     args = ap.parse_args()
-    fetch() if args.step == "fetch" else parse()
+    fetch(retry_404=args.retry_404) if args.step == "fetch" else parse()
 
 
 if __name__ == "__main__":

@@ -16,11 +16,12 @@ data class TraitSummary(
     val conditionalParts: List<String>,
     val genusLevel: Boolean,                    // some rows come from a genus page, not this species
     val relatives: List<Pair<Species, TraitSummary>> = emptyList(),   // no rows of its own; cited toxic congeners
+    val congener: CongenerToxic? = null,        // has rows; toxic parts its cited congeners list and it does not
 ) {
     val toxic get() = ingestionToxic || contactToxic
     val relative get() = !hasData && relatives.isNotEmpty()
     val relativeSerious get() = relative && relatives.any { it.second.serious }
-    val needsCaution get() = toxic || conditionalParts.isNotEmpty() || relative
+    val needsCaution get() = toxic || conditionalParts.isNotEmpty() || relative || congener != null
 
     /** Moderate or high, or a toxic row without a stated severity (treated as serious). */
     val serious get() = toxic && severity != "low"
@@ -57,6 +58,8 @@ data class TraitSummary(
             toxic && edibleAny -> "$edibleDesc · some parts mildly toxic"
             contactToxic -> "Mild skin irritant (low)"
             toxic -> "Mildly toxic if eaten (low)"
+            congener != null && edibleAny -> "$edibleDesc · other ${congener.genus} species toxic"
+            congener != null -> "Other ${congener.genus} species toxic"
             conditionalParts.isNotEmpty() -> "Edible only with conditions"
             edibleParts.any { it != "unspecified" } -> "Edible part listed: " + edibleParts.filter { it != "unspecified" }.joinToString(", ")
             edibleParts.isNotEmpty() -> "Edible · part not stated"
@@ -70,6 +73,7 @@ data class TraitSummary(
         else buildList {
             if (edibleAny) add(edibleDesc.replaceFirstChar { it.lowercase() } + if (conditionalParts.isNotEmpty()) " by the source" else "")
             if (toxic) add("${parts(toxicParts, 3)} listed as toxic to $route (${severity.ifBlank { "severity not stated" }})")
+            congener?.let { add(it.line.replaceFirstChar { c -> c.lowercase() }) }
         }.joinToString("; ")
 
     val chipKind: ChipKind
@@ -82,10 +86,37 @@ data class TraitSummary(
 
     companion object {
         private val order = listOf("low", "moderate", "high")
+        private val partOrder = listOf("leaf", "flower", "fruit", "seed", "root", "stem", "bark", "sap", "whole")
 
-        /** With [index], a species without rows of its own gets its cited toxic congeners as relatives (D-038). */
-        fun of(s: Species, index: WarningIndex? = null): TraitSummary =
-            own(s).let { t -> if (!t.hasData && index != null) t.copy(relatives = index.toxicIn(s.genus).filter { it.first.i != s.i }) else t }
+        /**
+         * With [index], a species without rows of its own gets its cited toxic congeners as relatives (D-038), and a
+         * species with rows gets the genus union (audit capture_lookalike_resolution-3): the toxic parts its genus'
+         * other cited species list and its own rows do not. Half the dangerous edible/toxic confusions on regional
+         * test stay inside a genus, and a congener's thinner rows read as edible-only: Prunus mexicana has only
+         * the NC State genus page, which states no poison, while P. americana lists leaf, seed and stem.
+         */
+        fun of(s: Species, index: WarningIndex? = null): TraitSummary {
+            val t = own(s)
+            if (index == null) return t
+            if (!t.hasData) return t.copy(relatives = index.toxicIn(s.genus).filter { it.first.i != s.i })
+            return t.copy(congener = congenerToxic(s, t, index))
+        }
+
+        private fun congenerToxic(s: Species, t: TraitSummary, index: WarningIndex): CongenerToxic? {
+            if ("whole" in t.toxicParts) return null          // its own rows already list every part
+            // other species of the genus; a name twin (D-044) carries the same rows, so it adds nothing
+            val others = index.toxicIn(s.genus).map { it.first }.filter { it.i != s.i && it.name != s.name }
+            val rows = others.flatMap { sp -> sp.traits.filter { it.category == "toxic" && it.part !in t.toxicParts }.map { sp to it } }
+            if (rows.isEmpty()) return null
+            val sevs = rows.map { it.second.severity.lowercase() }
+            return CongenerToxic(
+                genus = s.genus,
+                parts = rows.map { it.second.part }.distinct().sortedBy { p -> partOrder.indexOf(p).let { if (it < 0) partOrder.size else it } },
+                // the highest severity of those rows; one without a stated severity ranks as serious, as in own()
+                severity = if (sevs.any { it !in order }) "" else sevs.maxBy { order.indexOf(it) },
+                species = rows.map { it.first }.distinct(),
+            )
+        }
 
         private fun own(s: Species): TraitSummary {
             val t = s.traits
@@ -114,6 +145,24 @@ data class TraitSummary(
 enum class ChipKind { EDIBLE, CAUTION, NONE }
 
 /**
+ * Toxic parts that cited OTHER species of the genus list and this species' own rows do not (genus union, audit
+ * capture_lookalike_resolution-3). It is what the source says about the congeners, never a claim about this
+ * species, and it only ever adds caution: a part missing from both still means "no listing", not safe.
+ */
+data class CongenerToxic(val genus: String, val parts: List<String>, val severity: String, val species: List<Species>) {
+    /** Moderate, high, or unstated (treated as serious, as for a species' own rows). */
+    val serious get() = severity != "low"
+
+    /** "Other Prunus species: leaf, seed, stem listed toxic (high)" */
+    val line: String
+        get() {
+            val named = if ("whole" in parts) "all parts" else
+                parts.take(4).joinToString(", ") + if (parts.size > 4) " +${parts.size - 4}" else ""
+            return "Other $genus species: $named listed toxic (${severity.ifBlank { "severity not stated" }})"
+        }
+}
+
+/**
  * Cited toxic species per genus, from the catalog (D-038 warning flags; false positives over false negatives).
  * Live: a genus is flagged when it holds any cited toxic species. Capture: a species without trait rows is a
  * "relative" when its genus holds one.
@@ -140,11 +189,14 @@ class WarningIndex(catalog: Catalog) {
 fun cautionCandidates(top: List<Candidate>, index: WarningIndex? = null): List<Pair<Candidate, TraitSummary>> =
     top.map { it to TraitSummary.of(it.species, index) }.filter { it.second.needsCaution }
 
-/** Banner headline: cited serious toxicity first, then relatives of poisonous species, mild, relatives of mild, conditions. */
+/**
+ * Banner headline: cited serious toxicity first, then relatives of poisonous species, mild, relatives of mild,
+ * conditions. A species with rows whose congeners list more toxic parts (genus union) counts as a relative too.
+ */
 fun cautionHeadline(c: List<Pair<Candidate, TraitSummary>>): String = when {
     c.any { it.second.serious } -> "Caution: a poisonous candidate"
-    c.any { it.second.relativeSerious } -> "Caution: relative of a poisonous species"
+    c.any { it.second.relativeSerious || it.second.congener?.serious == true } -> "Caution: relative of a poisonous species"
     c.any { it.second.toxic } -> "Caution: some parts listed as mildly toxic"
-    c.any { it.second.relative } -> "Caution: relative of a mildly toxic species"
+    c.any { it.second.relative || it.second.congener != null } -> "Caution: relative of a mildly toxic species"
     else -> "Caution: edible only with conditions"
 }

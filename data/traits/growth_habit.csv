@@ -534,7 +534,7 @@ Eupatorium linearifolium,531,EUHYH,name,Forb/herb,Perennial,hyssopleaf thoroughw
 Eupatorium mohrii,532,EUMO4,name,Forb/herb,Perennial,Mohr's thoroughwort,https://plants.usda.gov/plant-profile/EUMO4,2026-11-23
 Eupatorium perfoliatum,533,EUPE3,name,Forb/herb,Perennial,common boneset,https://plants.usda.gov/plant-profile/EUPE3,2026-11-23
 Eupatorium pilosum,534,EUPI2,name,Forb/herb,Perennial,rough boneset,https://plants.usda.gov/plant-profile/EUPI2,2026-11-23
-Eupatorium quaternum,535,EUPU21,synonym Eupatorium purpureum,Forb/herb,Perennial,sweetscented joe pye weed,https://plants.usda.gov/plant-profile/EUPU21,2026-11-23
+Eupatorium quaternum,535,,none,,,,,2026-11-23
 Eupatorium resinosum,536,EURE8,name,Forb/herb,Perennial,pine barren thoroughwort,https://plants.usda.gov/plant-profile/EURE8,2026-11-23
 Eupatorium rotundifolium,537,EURO4,name,Forb/herb,Perennial,roundleaf thoroughwort,https://plants.usda.gov/plant-profile/EURO4,2026-11-23
 Eupatorium semiserratum,538,EUSE,name,Forb/herb,Perennial,smallflower thoroughwort,https://plants.usda.gov/plant-profile/EUSE,2026-11-23
@@ -597,7 +597,7 @@ Helianthus giganteus,594,HEGI,name,Forb/herb,Perennial,giant sunflower,https://p
 Helianthus glaucophyllus,595,HEGL2,name,Forb/herb,Perennial,whiteleaf sunflower,https://plants.usda.gov/plant-profile/HEGL2,2026-11-23
 Helianthus heterophyllus,596,HEHE4,name,Forb/herb,Perennial,variableleaf sunflower,https://plants.usda.gov/plant-profile/HEHE4,2026-11-23
 Helianthus hirsutus,597,HEHI2,name,Forb/herb,Perennial,hairy sunflower,https://plants.usda.gov/plant-profile/HEHI2,2026-11-23
-Helianthus laetiflorus,598,HEAT,synonym Helianthus atrorubens,Forb/herb,Perennial,purpledisk sunflower,https://plants.usda.gov/plant-profile/HEAT,2026-11-23
+Helianthus laetiflorus,598,HELA,synonym Helianthus scaberrimus,Forb/herb,Perennial,cheerful sunflower,https://plants.usda.gov/plant-profile/HELA,2026-11-24
 Helianthus longifolius,599,HELO3,name,Forb/herb,Perennial,longleaf sunflower,https://plants.usda.gov/plant-profile/HELO3,2026-11-23
 Helianthus maximiliani,600,HEMA2,name,Forb/herb,Perennial,Maximilian sunflower,https://plants.usda.gov/plant-profile/HEMA2,2026-11-23
 Helianthus microcephalus,601,HEMI3,name,Forb/herb,Perennial,small woodland sunflower,https://plants.usda.gov/plant-profile/HEMI3,2026-11-23
@@ -628,7 +628,7 @@ Hypochaeris albiflora,625,,none,,,,,2026-11-23
 Hypochaeris chillensis,626,,none,,,,,2026-11-23
 Hypochaeris glabra,627,HYGL2,name,Forb/herb,Annual,smooth cat's ear,https://plants.usda.gov/plant-profile/HYGL2,2026-11-23
 Hypochaeris radicata,628,HYRA3,name,Forb/herb,Perennial,hairy cat's ear,https://plants.usda.gov/plant-profile/HYRA3,2026-11-23
-Ionactis linariifolia,629,SYRA5,synonym Aster fragilis,Forb/herb,Perennial,smooth white oldfield aster,https://plants.usda.gov/plant-profile/SYRA5,2026-11-23
+Ionactis linariifolia,629,IOLI2,synonym Aster linariifolius,Forb/herb,Perennial,flaxleaf whitetop aster,https://plants.usda.gov/plant-profile/IOLI2,2026-11-24
 Iva annua,630,IVAN2,name,Forb/herb,Annual,annual marsh elder,https://plants.usda.gov/plant-profile/IVAN2,2026-11-23
 Iva frutescens,631,IVFR,name,Forb/herb;Subshrub,Perennial,Jesuit's bark,https://plants.usda.gov/plant-profile/IVFR,2026-11-23
 Iva imbricata,632,IVIM,name,Forb/herb;Subshrub,Perennial,seacoast marsh elder,https://plants.usda.gov/plant-profile/IVIM,2026-11-23
@@ -685,7 +685,7 @@ Nabalus crepidineus,682,PRCR,name,Forb/herb,Perennial,nodding rattlesnakeroot,ht
 Nabalus roanensis,683,PRRO2,name,Forb/herb,Biennial,Roan Mountain rattlesnakeroot,https://plants.usda.gov/plant-profile/PRRO2,2026-11-23
 Nabalus serpentarius,684,PRSE,name,Forb/herb,Perennial,cankerweed,https://plants.usda.gov/plant-profile/PRSE,2026-11-23
 Nabalus trifoliolatus,685,PRTR,name,Forb/herb,Perennial,gall of the earth,https://plants.usda.gov/plant-profile/PRTR,2026-11-23
-Nidorella ivifolia,686,BAHA,synonym Baccharis halimifolia,Shrub;Tree,Perennial,eastern baccharis,https://plants.usda.gov/plant-profile/BAHA,2026-11-23
+Nidorella ivifolia,686,,none,,,,,2026-11-23
 Oclemena acuminata,687,OCAC,name,Forb/herb,Perennial,whorled wood aster,https://plants.usda.gov/plant-profile/OCAC,2026-11-23
 Oclemena reticulata,688,OCRE2,name,Forb/herb,Perennial,pine barren whitetop aster,https://plants.usda.gov/plant-profile/OCRE2,2026-11-23
 Packera anonyma,689,PAAN6,name,Forb/herb,Perennial,Small's ragwort,https://plants.usda.gov/plant-profile/PAAN6,2026-11-23
@@ -1021,7 +1021,7 @@ Lepidium didymum,1018,CODI6,name,Forb/herb,Annual;Biennial,lesser swinecress,htt
 Lepidium virginicum,1019,LEVI3,name,Forb/herb,Annual;Biennial;Perennial,Virginia pepperweed,https://plants.usda.gov/plant-profile/LEVI3,2026-11-23
 Lobularia maritima,1020,LOMA,name,Forb/herb,Annual;Perennial,sweet alyssum,https://plants.usda.gov/plant-profile/LOMA,2026-11-23
 Lunaria annua,1021,LUAN,name,Forb/herb,Annual;Biennial,annual honesty,https://plants.usda.gov/plant-profile/LUAN,2026-11-23
-Mummenhoffia alliacea,1022,CASAS2,synonym Myagrum sativum,Forb/herb,Annual;Biennial,gold-of-pleasure,https://plants.usda.gov/plant-profile/CASAS2,2026-11-23
+Mummenhoffia alliacea,1022,THAL2,synonym Thlaspi alliaceum,Forb/herb,Annual,roadside pennycress,https://plants.usda.gov/plant-profile/THAL2,2026-11-24
 Nasturtium officinale,1023,NAOF,name,Forb/herb,Perennial,watercress,https://plants.usda.gov/plant-profile/NAOF,2026-11-23
 Noccaea perfoliata,1024,,none,,,,,2026-11-23
 Paysonia densipila,1025,LEDE3,synonym Lesquerella densipila,Forb/herb,Annual,Duck River bladderpod,https://plants.usda.gov/plant-profile/LEDE3,2026-11-23
@@ -2796,7 +2796,7 @@ Mnium hornum,2793,MNHO,name,Nonvascular,,horn calcareous moss,https://plants.usd
 Mnium marginatum,2794,MNMA70,name,Nonvascular,,olivegreen calcareous moss,https://plants.usda.gov/plant-profile/MNMA70,2026-11-24
 Mnium stellare,2795,MNST,name,Nonvascular,,stellar calcareous moss,https://plants.usda.gov/plant-profile/MNST,2026-11-24
 Mnium thomsonii,2796,MNTH70,name,Nonvascular,,Thomson's calcareous moss,https://plants.usda.gov/plant-profile/MNTH70,2026-11-24
-Plagiomnium affine,2797,BRLIC70,synonym Bryum affine,Nonvascular,,bryum moss,https://plants.usda.gov/plant-profile/BRLIC70,2026-11-24
+Plagiomnium affine,2797,BRLIC70,synonym Bryum affine,Nonvascular,,bryum moss,https://plants.usda.gov/plant-profile/BRLIC70,2026-11-23
 Plagiomnium ciliare,2798,PLCI3,name,Nonvascular,,plagiomnium moss,https://plants.usda.gov/plant-profile/PLCI3,2026-11-24
 Plagiomnium cuspidatum,2799,PLCU4,name,Nonvascular,,toothed plagiomnium moss,https://plants.usda.gov/plant-profile/PLCU4,2026-11-24
 Plagiomnium medium,2800,PLME4,name,Nonvascular,,intermediate plagiomnium moss,https://plants.usda.gov/plant-profile/PLME4,2026-11-24
@@ -3819,7 +3819,7 @@ Thalictrum macrostylum,3816,THMA4,name,Forb/herb,Perennial,piedmont meadow-rue,h
 Thalictrum pubescens,3817,THPU2,name,Forb/herb,Perennial,king of the meadow,https://plants.usda.gov/plant-profile/THPU2,2026-11-24
 Thalictrum revolutum,3818,THRE,name,Forb/herb,Perennial,waxyleaf meadow-rue,https://plants.usda.gov/plant-profile/THRE,2026-11-24
 Thalictrum thalictroides,3819,THTH2,name,Forb/herb,Perennial,rue anemone,https://plants.usda.gov/plant-profile/THTH2,2026-11-24
-Trautvetteria carolinensis,3820,HYCA,synonym Hydrastis canadensis,Forb/herb,Perennial,goldenseal,https://plants.usda.gov/plant-profile/HYCA,2026-11-24
+Trautvetteria carolinensis,3820,,none,,,,,2026-11-24
 Trautvetteria fonticalcarea,3821,,none,,,,,2026-11-24
 Xanthorhiza simplicissima,3822,XASI,name,Forb/herb;Subshrub,Perennial,yellowroot,https://plants.usda.gov/plant-profile/XASI,2026-11-24
 Rhabdoweisia crispata,3823,RHCR7,name,Nonvascular,,rhabdoweisia moss,https://plants.usda.gov/plant-profile/RHCR7,2026-11-24
@@ -4345,7 +4345,7 @@ Viola brittoniana,4342,VIBR,name,Forb/herb,Perennial,northern coastal violet,htt
 Viola canadensis,4343,VICA4,name,Forb/herb,Perennial,Canadian white violet,https://plants.usda.gov/plant-profile/VICA4,2026-11-24
 Viola communis,4344,VISO,synonym Viola priceana,Forb/herb,Annual;Perennial,common blue violet,https://plants.usda.gov/plant-profile/VISO,2026-11-24
 Viola cucullata,4345,VICU,name,Forb/herb,Perennial,marsh blue violet,https://plants.usda.gov/plant-profile/VICU,2026-11-24
-Viola edulis,4346,VIES3,synonym Viola esculenta,Forb/herb,Perennial,salad violet,https://plants.usda.gov/plant-profile/VIES3,2026-11-24
+Viola edulis,4346,,none,,,,,2026-11-24
 Viola egglestonii,4347,VIEG,name,Forb/herb,Perennial,glade violet,https://plants.usda.gov/plant-profile/VIEG,2026-11-24
 Viola emarginata,4348,VISAS5,name,Forb/herb,Perennial,arrowleaf violet,https://plants.usda.gov/plant-profile/VISAS5,2026-11-24
 Viola eriocarpa,4349,,none,,,,,2026-11-24

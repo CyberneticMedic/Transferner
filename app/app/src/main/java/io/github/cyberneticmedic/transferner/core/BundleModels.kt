@@ -7,8 +7,10 @@ import kotlinx.serialization.json.Json
 /** The JSON files of a model bundle, as written by src/transferner/export/bundle.py. */
 val BundleJson = Json { ignoreUnknownKeys = true }
 
+/** latest.json. [minApp]: the lowest app versionCode that can run this bundle (0.7+; D-045). App 0.5 took
+ *  bundle 0.6, whose detector has a fourth output, and its live detector stopped. */
 @Serializable
-data class Latest(val version: String, val manifest: String)
+data class Latest(val version: String, val manifest: String, @SerialName("min_app") val minApp: Long = 0)
 
 @Serializable
 data class Manifest(val version: String, val created: String = "", val files: List<ManifestFile>)
@@ -30,7 +32,7 @@ data class TensorInfo(
     val isInt8 get() = dtype == "int8"
 }
 
-@Serializable
+/** The outputs the app reads by role; the graph may have more (see [DetectorMeta.outputMap]). */
 data class DetectorOutputs(
     @SerialName("image_logits") val imageLogits: TensorInfo,
     val objectness: TensorInfo,
@@ -61,7 +63,9 @@ data class DetectorMeta(
     val mean: List<Float>,
     val std: List<Float>,
     val input: TensorInfo,
-    val outputs: DetectorOutputs,
+    /** Every output of the graph, by role. LiteRT needs a buffer for each output to run, so the app creates one
+     *  per entry, including roles it does not know yet (D-045): a newer model keeps running on an older app. */
+    @SerialName("outputs") val outputMap: Map<String, TensorInfo>,
     @SerialName("box_coder") val boxCoder: BoxCoder,
     val anchors: List<List<Float>>,
     val postprocess: Postprocess,
@@ -69,7 +73,11 @@ data class DetectorMeta(
     val families: List<String>,
     @SerialName("family_of") val familyOf: List<Int>,
     val regions: Regions? = null,
-)
+) {
+    val outputs: DetectorOutputs
+        get() = DetectorOutputs(outputMap.getValue("image_logits"), outputMap.getValue("objectness"), outputMap.getValue("boxes"),
+            outputMap["region_logits"])
+}
 
 @Serializable
 data class SpeciesPreprocess(val mean: List<Float>, val std: List<Float>)

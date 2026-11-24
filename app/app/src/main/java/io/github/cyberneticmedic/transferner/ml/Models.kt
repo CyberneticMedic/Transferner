@@ -82,8 +82,7 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
     private val runner = ModelRunner(File(dir, meta.model).path, meta.signature, runtime, threads, null, env)
     private val inBuf = runner.input(meta.input.name)
     private val outs = meta.outputs
-    private val outBufs = (listOf(outs.imageLogits, outs.objectness, outs.boxes) + listOfNotNull(outs.regionLogits))
-        .associate { it.name to runner.output(it.name) }
+    private val outBufs = meta.outputMap.values.associate { it.name to runner.output(it.name) }   // all outputs, known or not
     private val labelEma = TimeEma(tuning.labelTauS)        // the shown label (focused or not)
     private val warnEma = TimeEma(tuning.warnTauS)          // warnings and walk scoring: unfocused, faster
     private val tracker = BoxTracker()

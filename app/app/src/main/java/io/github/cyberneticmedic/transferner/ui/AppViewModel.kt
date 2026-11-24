@@ -212,11 +212,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         appUpdate.value = UpdateState.Checking
         viewModelScope.launch {
             try {
-                val (rel, remote) = withContext(Dispatchers.IO) {
-                    updater.check(prefs.server) to runCatching { repo.remoteVersion(prefs.server) }.getOrNull()
+                val (rel, latest) = withContext(Dispatchers.IO) {
+                    updater.check(prefs.server) to runCatching { repo.remoteLatest(prefs.server) }.getOrNull()
                 }
                 val installed = repo.installed()?.first
-                bundleUpdate.value = remote?.takeIf { installed != null && it != installed }
+                val remote = latest?.version
+                // a bundle this app cannot run is not offered; the app update is (D-045)
+                bundleUpdate.value = remote?.takeIf { installed != null && it != installed && latest.minApp <= updater.currentVersionCode }
                 appUpdate.value = if (rel != null) UpdateState.Available(rel) else UpdateState.UpToDate(remote)
             } catch (e: Exception) {
                 appUpdate.value = if (silent) UpdateState.Idle else UpdateState.Failed(e.message ?: e.toString())
@@ -334,7 +336,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    repo.download(server, { models -> planFor(models).speciesVariant }) { bundle.value = BundleState.Downloading(it) }
+                    repo.download(server, { models -> planFor(models).speciesVariant }, updater.currentVersionCode) {
+                        bundle.value = BundleState.Downloading(it)
+                    }
                 }
                 val files = withContext(Dispatchers.IO) { repo.load() } ?: error("bundle incomplete after download")
                 bundle.value = BundleState.Ready(files)

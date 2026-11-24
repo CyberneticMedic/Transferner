@@ -77,19 +77,23 @@ class BundleRepository(private val root: File) {
 
     private fun text(url: String) = get(url).inputStream.use { it.readBytes().decodeToString() }
 
-    /** The server's current bundle version (latest.json). Blocking. */
-    fun remoteVersion(server: String): String {
+    /** The server's current bundle (latest.json). Blocking. */
+    fun remoteLatest(server: String): Latest {
         val base = if (server.endsWith("/")) server else "$server/"
-        return BundleJson.decodeFromString<Latest>(text(base + "latest.json")).version
+        return BundleJson.decodeFromString<Latest>(text(base + "latest.json"))
     }
+
+    fun remoteVersion(server: String): String = remoteLatest(server).version
 
     /**
      * Blocking; call off the main thread. [choose] picks the variant from the server's species.json (or
      * returns a fixed one). Fails early, before any large file, when the phone lacks the storage.
      */
-    fun download(server: String, choose: (SpeciesModels) -> String, onProgress: (Progress) -> Unit): Pair<String, String> {
+    fun download(server: String, choose: (SpeciesModels) -> String, appVersion: Long = Long.MAX_VALUE, onProgress: (Progress) -> Unit): Pair<String, String> {
         val base = if (server.endsWith("/")) server else "$server/"
         val latest = BundleJson.decodeFromString<Latest>(text(base + "latest.json"))
+        if (latest.minApp > appVersion)
+            throw IOException("model bundle ${latest.version} needs a newer app: update the app first (Settings → Updates)")
         val manifestText = text(base + latest.manifest)
         val manifest = BundleJson.decodeFromString<Manifest>(manifestText)
         val vbase = base + manifest.version + "/"

@@ -294,6 +294,7 @@ def main() -> None:
     ap.add_argument("--no-publish", action="store_true", help="build the version directory but leave latest.json (staging)")
     ap.add_argument("--golden-uuid", default="gbif-6178854992-1")
     ap.add_argument("--text-emb", default="artifacts/text_emb.npy", help="species-name embeddings for the open-set score ('' = none)")
+    ap.add_argument("--min-app", type=int, default=10, help="lowest app versionCode that can run this bundle (D-045); 10 = app 0.6")
     args = ap.parse_args()
     root = data_root()
     repo = Path(__file__).resolve().parents[3]
@@ -359,12 +360,14 @@ def main() -> None:
     (out / "catalog.json").write_text(json.dumps({"species": cat, "region": ["SC", "NC", "GA", "TN"],
                                                   "trait_rule": "cited rows only; absence never means safe (D-027)"}))
     files = sorted(p for p in out.rglob("*") if p.is_file())
-    manifest = {"version": args.version, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    manifest = {"version": args.version, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "min_app": args.min_app,
                 "files": [{"path": str(p.relative_to(out)), "bytes": p.stat().st_size, "sha256": sha256(p),
                            **({"group": groups[p.name]} if p.name in groups else {})} for p in files]}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=0))
     if not args.no_publish:
-        (base / "latest.json").write_text(json.dumps({"version": args.version, "manifest": f"{args.version}/manifest.json"}))
+        tmp = base / "latest.json.tmp"
+        tmp.write_text(json.dumps({"version": args.version, "manifest": f"{args.version}/manifest.json", "min_app": args.min_app}))
+        tmp.replace(base / "latest.json")
     total = sum(f["bytes"] for f in manifest["files"])
     n_thumb = sum(1 for e in cat if e["thumb"])
     n_tr = sum(1 for e in cat if e["traits"])

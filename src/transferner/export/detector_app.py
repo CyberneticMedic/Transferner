@@ -17,7 +17,12 @@ pixels with a per-channel lookup table built from the sidecar's mean, std, scale
 
 Writes artifacts/detector/<name>/detector_app_<tag>.tflite and detector_app_<tag>.json (the sidecar: I/O
 names, dtypes and quantisation, anchors, box coder, genera/families, and this script's own check), and a row
-to results/tables/export_check.csv. Runs in the CPU export venv:
+to results/tables/export_check.csv; --out-dir writes the two files elsewhere (a trial run that must not
+replace the staged graph). The check scores the float graph and the converted one on the same photos and pairs
+them (eval.metrics.paired_agreement: McNemar discordant counts, paired CI, top-1 agreement, KL): D-041 read a
+-3.7 pt INT8 loss from 512 photos that was -1.08 +- 0.38 pt on the full regional test (audit
+live_int8_precision-loss-overstated), so the default check is that test (--split test --images 20000, D-043).
+Runs in the CPU export venv:
   cd /tmp && PYTHONPATH=~/Transferner/src ~/Transferner/.venv-export/bin/python -m transferner.export.detector_app"""
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ import argparse
 import json
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -33,7 +39,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.ops import nms
 
-from ..eval.metrics import coco_map
+from ..eval.metrics import coco_map, paired_agreement
 from ..train.train_detector import BoxSet, Net, anchors_for, build, collate, load_items
 from ..utils.config import data_root, load
 from .litert import mem_guard, peak_rss_gb, static_quantizer, write
@@ -97,9 +103,10 @@ class AppExport(nn.Module):
         return image_logits, torch.cat(obj, 1), h.regression_head(feats), regions
 
 
-def score(run, loader, box_coder, anchors0, size, family_of, mean, std, keep=100, iou=0.55) -> dict:
+def score(run, loader, box_coder, anchors0, size, family_of, mean, std, keep=100, iou=0.55, sink=None) -> dict:
     """run(x) -> (image_logits, objectness, boxes) for a normalised batch: whole-frame genus/family top-k
-    and class-agnostic box AP, the two things the app shows."""
+    and class-agnostic box AP, the two things the app shows. A dict as sink collects the whole-frame logits
+    and genus labels, so two runs over the same loader can be paired (float vs INT8)."""
     fam_t = torch.as_tensor(family_of)
     n_fam = int(family_of.max()) + 1
     top1 = top5 = fam1 = n = 0
@@ -109,6 +116,9 @@ def score(run, loader, box_coder, anchors0, size, family_of, mean, std, keep=100
         x = ((imgs.float() / 255) - mean) / std
         il, ob, bx = run(x)
         y = genus - 1
+        if sink is not None:
+            sink.setdefault("logits", []).append(il.float())
+            sink.setdefault("y", []).append(y)
         p = il.float().softmax(-1)
         top1 += int((p.argmax(1) == y).sum())
         top5 += int((p.topk(5, 1).indices == y[:, None]).any(1).sum())
@@ -148,11 +158,15 @@ def main() -> None:
     ap.add_argument("--recipe", choices=["fp32", "int8"], default="int8")
     ap.add_argument("--act-observer", choices=["histogram", "minmax"], default="histogram")
     ap.add_argument("--float-image-head", action="store_true",
-                    help="keep the whole-frame head (head.image_cls: pool -> 1280 -> genera, ~3M MACs) in float: its INT8 "
-                         "logits (scale ~0.27) cost mnv4_live 3.7 pt whole-frame genus top-1 on 512 val photos")
+                    help="keep the whole-frame head (head.image_cls: pool -> 1280 -> genera, ~3M MACs) in float (tag _fh); "
+                         "D-043: +0.1 pt on the regional test for 22.5 MB instead of 14 MB")
     ap.add_argument("--regions", action="store_true", help="add the (1, 9, G) region_logits output (tag _rg)")
-    ap.add_argument("--images", type=int, default=512)
-    ap.add_argument("--split", default="val")
+    # D-043 / audit live_int8_precision-loss-overstated: the old default (512 val photos, 93% ToL) put the INT8
+    # loss at -3.7 pt where the full regional test says -1.08 +- 0.38; at most 20,000 covers the 12,358 test photos
+    ap.add_argument("--images", type=int, default=20000)
+    ap.add_argument("--split", default="test")
+    ap.add_argument("--out-dir", default=None,
+                    help="write the .tflite and sidecar here instead of artifacts/detector/<name> (trial runs)")
     ap.add_argument("--calib", type=int, default=256)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--min-free-gb", type=float, default=8.0)
@@ -183,7 +197,8 @@ def main() -> None:
     dl = loader(check, 16)                     # materialised before LiteRT/JAX is imported (see detector_litert)
     cx = torch.cat([((imgs.float() / 255) - mean) / std for imgs, *_ in loader(calib, 32)])
     anchors0 = anchors_for(model, size, "cpu")
-    run_score = lambda run: score(run, dl, model.box_coder, anchors0, size, family_of, mean, std)
+    run_score = lambda run, sink=None: score(run, dl, model.box_coder, anchors0, size, family_of, mean, std, sink=sink)
+    fl_sink, q_sink = {}, {}
 
     exp = AppExport(model, args.float_image_head, args.regions).eval()
     if args.regions:
@@ -197,7 +212,7 @@ def main() -> None:
         assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref["image_logits"], atol=1e-5), err
         print(f"app graph == training graph (objectness max err {err:.1e})", flush=True)
         t0 = time.time()
-        fl = run_score(lambda x: exp(x)[:3])
+        fl = run_score(lambda x: exp(x)[:3], fl_sink)
     print("float:", fl, f"({time.time() - t0:.0f} s)", flush=True)
 
     tag = args.recipe + ("_minmax" if args.recipe == "int8" and args.act_observer == "minmax" else "") + \
@@ -221,7 +236,9 @@ def main() -> None:
 
     import litert_torch
     from litert_torch.quantize.quant_config import QuantConfig
-    path = d / f"detector_app_{tag}.tflite"
+    out_dir = Path(args.out_dir) if args.out_dir else d
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"detector_app_{tag}.tflite"
     t = time.time()
     litert_torch.convert(m, (sample,), quant_config=QuantConfig(pt2e_quantizer=quantizer) if quantizer else None).export(str(path))
     row.update(convert_s=round(time.time() - t), file_mb=round(path.stat().st_size / 2**20, 2))
@@ -263,8 +280,15 @@ def main() -> None:
                 res[k].append(torch.from_numpy(a))
         return tuple(torch.cat(res[k]) for k in names)
 
-    got = run_score(lambda x: tfl(x)[:3])
+    got = run_score(lambda x: tfl(x)[:3], q_sink)
     print("litert:", got, flush=True)
+    yf, yq = torch.cat(fl_sink["y"]), torch.cat(q_sink["y"])
+    assert torch.equal(yf, yq), "float and converted runs saw different photos"
+    paired = paired_agreement(torch.cat(fl_sink["logits"]).numpy(), torch.cat(q_sink["logits"]).numpy(), yf.numpy())
+    print(f"paired float vs {tag} on {paired['n']} {args.split} photos: right only in float {paired['ref_only']}, only "
+          f"converted {paired['test_only']} (McNemar p {paired['mcnemar_p']:.2g}), top-1 "
+          f"{100 * paired['delta_top1']:+.2f} +- {100 * paired['delta_ci95']:.2f} pt, agreement {paired['top1_agree']:.4f}, "
+          f"KL(float||{tag}) {paired['kl_mean']:.4f}", flush=True)
     region_check = None
     if args.regions:                           # INT8 vs float region labels on 64 held-out frames of the check split
         hx = torch.cat([((imgs.float() / 255) - mean) / std for imgs, *_ in dl[:4]])[:64]
@@ -276,7 +300,11 @@ def main() -> None:
         print("regions int8 vs float:", region_check, flush=True)
     row.update(status="ok", x86_ms_median=round(1000 * float(np.median(times[1:])), 1), peak_rss_gb=round(peak_rss_gb(), 1),
                **{f"q_{k}": round(v, 4) for k, v in got.items() if k != "n_images"},
-               **{f"delta_{k}": round(got[k] - fl[k], 4) for k in ("agnostic_ap50", "image_genus_top1", "image_family_top1")})
+               **{f"delta_{k}": round(got[k] - fl[k], 4) for k in ("agnostic_ap50", "image_genus_top1", "image_family_top1")},
+               paired_float_only=paired["ref_only"], paired_q_only=paired["test_only"],
+               paired_mcnemar_p=float(f"{paired['mcnemar_p']:.3g}"), paired_delta_ci95=round(paired["delta_ci95"], 4),
+               paired_top1_agree=round(paired["top1_agree"], 4), paired_kl_mean=round(paired["kl_mean"], 5),
+               **({"out_dir": str(out_dir)} if args.out_dir else {}))
     write(row)
 
     side = {
@@ -292,9 +320,9 @@ def main() -> None:
         "genera": genera, "families": families, "family_of": [int(v) for v in family_of],
         **({"regions": regions_meta(model, size)} if args.regions else {}),
         "check": {"split": args.split, "images": args.images, "float": fl, "litert": got, "regions": region_check,
-                  "checkpoint": f"{args.name}/{args.ckpt}", "epoch": int(ck["epoch"])},
+                  "paired": paired, "checkpoint": f"{args.name}/{args.ckpt}", "epoch": int(ck["epoch"])},
     }
-    (d / f"detector_app_{tag}.json").write_text(json.dumps(side))
+    (out_dir / f"detector_app_{tag}.json").write_text(json.dumps(side))
     print(f"wrote {path} and its sidecar", flush=True)
 
 

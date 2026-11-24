@@ -31,11 +31,13 @@ def per_class_f1(pred: np.ndarray, y: np.ndarray) -> tuple[float, float]:
 
 
 def cluster_bootstrap_ci(values: np.ndarray, clusters: np.ndarray, n_boot: int = 1000,
-                         alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
-    """CI of mean(values), resampling whole clusters (observations: their images are correlated)."""
+                         alpha: float = 0.05, seed: int = 0, weights: np.ndarray | None = None) -> tuple[float, float]:
+    """CI of mean(values), resampling whole clusters (observations: their images are correlated). With weights,
+    of the weighted mean: encounter-weighted rates (eval/encounter.py; audit evaluation-power-and-weighting)."""
     _, inv = np.unique(clusters, return_inverse=True)
-    sums = np.bincount(inv, weights=values.astype(float))
-    cnts = np.bincount(inv).astype(float)
+    w = np.ones(len(values)) if weights is None else np.asarray(weights, float)
+    sums = np.bincount(inv, weights=values.astype(float) * w)
+    cnts = np.bincount(inv, weights=w)
     rng = np.random.default_rng(seed)
     k = len(sums)
     stats = np.empty(n_boot)
@@ -53,6 +55,33 @@ def mcnemar(a_correct: np.ndarray, b_correct: np.ndarray) -> dict:
     b_only = int((~a_correct & b_correct).sum())
     p = binomtest(b_only, a_only + b_only, 0.5).pvalue if a_only + b_only else 1.0
     return {"a_only": a_only, "b_only": b_only, "p": float(p)}
+
+
+def paired_agreement(ref_logits: np.ndarray, test_logits: np.ndarray, y: np.ndarray) -> dict:
+    """A reference model (float) against a variant of it (INT8) on the same photos: McNemar discordant counts
+    (ref_only: right only in the reference; test_only: right only in the variant), the top-1 change with its
+    paired 95% CI, top-1 agreement and mean KL(ref || test) of the softmax distributions.
+
+    Why (audit live_int8_precision-loss-overstated, D-043): D-041 read -3.7 pt INT8 loss from 512 photos (26 vs 7
+    discordant); paired on 12,358 regional test photos it was -1.08 +- 0.38 pt (361 vs 228). A 1-3 pt delta on a
+    few hundred photos is noise, while agreement and KL are stable from ~1,300 photos and rank PTQ recipes.
+    Ties (INT8 logits with a coarse scale tie exactly on ~4.6% of frames) go to the lowest index, as argmax."""
+    a = np.asarray(ref_logits, np.float64)
+    b = np.asarray(test_logits, np.float64)
+    y = np.asarray(y)
+    la = a - a.max(1, keepdims=True)
+    la -= np.log(np.exp(la).sum(1, keepdims=True))
+    lb = b - b.max(1, keepdims=True)
+    lb -= np.log(np.exp(lb).sum(1, keepdims=True))
+    pa, pb = la.argmax(1), lb.argmax(1)
+    mc = mcnemar(pa == y, pb == y)
+    n = len(y)
+    d = (mc["b_only"] - mc["a_only"]) / n
+    se = np.sqrt(max(mc["a_only"] + mc["b_only"] - n * d * d, 0.0)) / n     # SD of the per-photo difference / sqrt(n)
+    kl = (np.exp(la) * (la - lb)).sum(1)
+    return {"n": n, "ref_only": mc["a_only"], "test_only": mc["b_only"], "mcnemar_p": mc["p"],
+            "delta_top1": float(d), "delta_ci95": float(1.96 * se), "top1_agree": float((pa == pb).mean()),
+            "kl_mean": float(kl.mean())}
 
 
 def lookalike_confusion(pred: np.ndarray, y: np.ndarray, groups: dict[int, set[str]]) -> dict:

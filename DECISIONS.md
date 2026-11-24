@@ -311,3 +311,18 @@ Newest at the bottom. Format: ID · date · decision · why.
   - **D-041 correction.** The −3.7 pt INT8 loss for `mnv4_live` came from the 512-photo check set. Paired on the full regional test it is −1.08 ± 0.38 pt (72.84% → 71.77%; 361 photos right only in float, 228 only in INT8), found by the read-only audit (`$TRANSFERNER_DATA/ops/audit-20261124.json`, finding `live_int8_precision-loss-overstated`). D-041's observer and float-head diagnoses were read from the same 512 photos. Export checks now use `--split test --images 20000`.
   - **INT8 logit ties.** The INT8 `image_logits` scale (0.27) makes some genera tie exactly; the 0.5 golden photo has Polemonium and Mertensia both at 0.0949. `GoldenTest` now accepts a different order only for exact ties. The audit's fix (shift and clamp the logits before the int8 output) is for the next export.
   - **Bundle 0.5 staged, not published:** `mnv4_live448` INT8 plus the same `focus.json` (model-independent: same genera). The app reads the input size from the sidecar, so no app change is needed; all unit tests pass against the 0.5 and 0.4 goldens. `latest.json` stays at 0.4 until the user asks.
+- **D-040 · 2026-11-24 (recorded late, after its result) · Encounter-weighted sampling for the live retrain, and an encounter-weighted metric.**
+  - **Why:** the 50 genera met most often in the field (34% of 2.27M regional GBIF observations) got 3.8% of the first live model's training and 8.1% of `mnv4_live`'s (the sampler balances genera at power 0.5). Their live recall was 41% against 57% overall.
+  - **What:** `train_live_head.py --encounter-mix M --encounter-power P` mixes the balanced per-genus share with the genus' share of regional observations (`priors_state_month`). Every eval also reports `encounter_top1` (per-genus recall on BioCLIP's ~20K regional val photos, weighted by how often each genus is met), `pool_top1` and `top50_recall`; `--select encounter` selects on it.
+  - **Result (`mnv4_live_enc`: from `mnv4_live`, 1 pass at 320, mix 0.5, power 1, lr 5e-4).** Test, regional; the trait columns are genus-balanced recall on all non-specimen val photos of the 339 genera with cited trait rows, 40 per genus (`eval/trait_recall.py`):
+
+    | Model | Genus top-1 | Encounter-weighted | Top-50 genera | Pool (176K) | Edible genera | Toxic genera |
+    |---|---|---|---|---|---|---|
+    | `mnv4_live` @ 320 | 72.8% | 72.4% | 70.5% | 72.4% | 74.0% | 79.1% |
+    | `mnv4_live_enc` @ 320 | 71.9% | 76.1% | 77.5% | 73.3% | 74.3% | 78.7% |
+    | `mnv4_live448` @ 448 | 77.0% | 77.0% | 75.4% | 77.1% | 78.7% | 82.8% |
+
+    - Encounter weighting buys +3.7 pt on what a walker meets and +7 pt on the commonest genera, for −0.9 pt per photo, and leaves the trait genera flat on average.
+    - **Cost on the genera it down-samples** (the read-only audit's warning; 40 photos each, so ±7 pt per genus): fig 70 → 60%, pomegranate 82.5 → 77.5%, feijoa 67.5 → 65%, Cicuta 67.5 → 65%, Conium 70 → 65%. The regional pool cannot see this (0–1 photos of the cultivated genera).
+    - 448 px alone beats it on every column except the top-50 genera.
+  - **Next:** if encounter weighting is kept, exempt the 339 trait genera (target = max(mixed, balanced), renormalised, as the audit proposes) and combine it with 448 px in the next live retrain; select on encounter or pool top-1 guarded by the trait-genus recall. Not shipped.

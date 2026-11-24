@@ -151,3 +151,16 @@ data class FocusMeta(val eps: Float, val categories: List<FocusCategory>, val so
         return b
     }
 }
+
+/** app.json on the bundle server (scripts/publish_apk.py, D-042): the latest sideloaded APK. */
+@Serializable
+data class AppRelease(
+    val versionCode: Long,
+    val versionName: String,
+    val apk: String,
+    val bytes: Long,
+    val sha256: String,
+    val notes: String = "",
+) {
+    fun newerThan(installed: Long) = versionCode > installed
+}

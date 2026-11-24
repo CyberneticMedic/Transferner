@@ -188,7 +188,7 @@ def goldens(root: Path, gdir: Path, uuid: str, det_path: Path, det_side: dict, s
     W = torch.from_numpy(np.fromfile(head["_bin"], dtype="<f2").reshape(head["n"], head["dim"]).astype(np.float32))
     logits = (head["scale"] * torch.from_numpy(emb) @ W.T + torch.tensor(head["bias"])) / head["temperature"]
     sv, si = logits.softmax(-1).topk(5)
-    json.dump({"uuid": uuid, "detector": det_g, "species_top5": [[int(j), float(v)] for j, v in zip(si, sv)],
+    json.dump({"uuid": uuid, "bundle": det_path.parent.name, "detector": det_g, "species_top5": [[int(j), float(v)] for j, v in zip(si, sv)],
                "embedding_norm": float(np.linalg.norm(emb))}, open(gdir / "golden.json", "w"), indent=1)
     print("goldens:", json.load(open(gdir / "golden.json")), flush=True)
 

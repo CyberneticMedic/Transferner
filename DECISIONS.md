@@ -286,3 +286,12 @@ Newest at the bottom. Format: ID · date · decision · why.
     - **Fixes:** QAT (D-011), or run the float graph on the Moto's CPU through XNNPACK in FP16. Its latency is not measured: an estimated 1.5–2.5× the INT8 model, inside the user's 200 ms budget.
   - **Staged, not published:** bundle 0.4 = `mnv4_live` INT8 (`detector_app_int8`, 14.0 MB) plus the same `focus.json`; a phone on 0.3 would fetch about 15 MB. `latest.json` stays at 0.3 until the user asks (they said the model can be updated later). `export/bundle.py --no-publish` builds without publishing.
   - **Published 2026-11-24 at the user's request:** `latest.json` → bundle 0.4 (`mnv4_live` INT8). The 0.3 pointer is kept in the session scratchpad; reverting means writing `{"version": "0.3", "manifest": "0.3/manifest.json"}` back to `$TRANSFERNER_DATA/bundle/latest.json`.
+- **D-042 · 2026-11-24 · In-app updates for the sideloaded app (user request).**
+  - The bundle server also publishes `app.json` (versionCode, versionName, APK file, size, SHA-256, notes), written by `scripts/publish_apk.py`. The script reads the version with aapt2, refuses an APK not signed with the sideload key or without a higher versionCode, writes `app.json` only after the APK is in place, and removes older APKs.
+  - **The app (0.5+)** checks `app.json` and `latest.json` at launch and from Settings → Updates:
+    - It downloads a newer APK into its cache, verifies the SHA-256, and opens the system installer. The first time, Android asks to allow installs from Transferner.
+    - The update replaces the app in place: same package, same key, data kept (settings, model bundle, log).
+    - A newer model bundle is offered the same way and fetches only changed files (D-041).
+    - A banner on the live screen links to Settings when anything is new.
+  - **Signing:** every APK is signed with one key, a copy of the debug keystore kept at `/models/ml/android/signing/transferner-sideload.keystore` (SHA-256 35a2f1fd…380e), set explicitly in `app/app/build.gradle.kts`. If that key were lost, updates would require an uninstall, which deletes the app's data.
+  - 0.5 itself must be installed once by hand from the web page; later versions update in-app.

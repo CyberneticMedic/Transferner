@@ -223,6 +223,21 @@ fun LiveScreen(vm: AppViewModel) {
             }
         }
 
+        // Update banner (D-042): a newer app or model bundle on the home server -> Settings
+        val upd by vm.appUpdate.collectAsState()
+        val bundleNew by vm.bundleUpdate.collectAsState()
+        val updText = when {
+            upd is UpdateState.Available || upd is UpdateState.Ready || upd is UpdateState.Downloading ->
+                "App update available" + if (bundleNew != null) " · new models" else ""
+            bundleNew != null -> "New models available"
+            else -> null
+        }
+        if (updText != null) {
+            Text("$updText · tap to update", color = C.ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = with(androidx.compose.ui.platform.LocalDensity.current) { topBarBottom.toDp() } + 8.dp)
+                    .background(Color.White, RoundedCornerShape(50)).clickable { vm.go(Screen.SETTINGS) }.padding(horizontal = 14.dp, vertical = 8.dp))
+        }
+
         Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().onGloballyPositioned { sheetTop = it.boundsInParent().top }
                 .background(C.sheet, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))

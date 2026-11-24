@@ -34,6 +34,10 @@ class GoldenTest {
     private val data = System.getProperty("transferner.data").orEmpty()
     private val golden = File(data, "app_golden")
     private val bundle: File by lazy {
+        // the bundle the goldens were made from (golden.json "bundle"), else the published one
+        val pinned = File(golden, "golden.json").takeIf { it.exists() }?.let {
+            BundleJson.parseToJsonElement(it.readText()).jsonObject["bundle"]?.jsonPrimitive?.content }
+        if (pinned != null) return@lazy File(data, "bundle/$pinned")
         val latest = File(data, "bundle/latest.json")
         if (!latest.exists()) File(data, "bundle/none")
         else File(data, "bundle/" + BundleJson.decodeFromString<io.github.cyberneticmedic.transferner.core.Latest>(latest.readText()).version)

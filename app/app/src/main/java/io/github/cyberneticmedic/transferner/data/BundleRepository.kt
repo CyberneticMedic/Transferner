@@ -71,6 +71,12 @@ class BundleRepository(private val root: File) {
 
     private fun text(url: String) = get(url).inputStream.use { it.readBytes().decodeToString() }
 
+    /** The server's current bundle version (latest.json). Blocking. */
+    fun remoteVersion(server: String): String {
+        val base = if (server.endsWith("/")) server else "$server/"
+        return BundleJson.decodeFromString<Latest>(text(base + "latest.json")).version
+    }
+
     /**
      * Blocking; call off the main thread. [choose] picks the variant from the server's species.json (or
      * returns a fixed one). Fails early, before any large file, when the phone lacks the storage.

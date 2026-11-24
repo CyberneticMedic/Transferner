@@ -45,6 +45,17 @@ enum class Screen { SETUP, LIVE, RESULT, SPECIES, LOG, SETTINGS }
 const val MIN_BOX_THRESHOLD = 0.05f
 const val MAX_BOX_THRESHOLD = 0.9f
 
+/** In-app update state (D-042). */
+sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data class UpToDate(val bundle: String?) : UpdateState
+    data class Available(val release: io.github.cyberneticmedic.transferner.core.AppRelease) : UpdateState
+    data class Downloading(val release: io.github.cyberneticmedic.transferner.core.AppRelease, val done: Long, val total: Long) : UpdateState
+    data class Ready(val release: io.github.cyberneticmedic.transferner.core.AppRelease, val apk: File) : UpdateState
+    data class Failed(val message: String) : UpdateState
+}
+
 sealed interface BundleState {
     data object Missing : BundleState
     data class Downloading(val p: Progress?) : BundleState
@@ -81,6 +92,10 @@ data class IdResult(
  */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
+    val updater = io.github.cyberneticmedic.transferner.data.AppUpdater(app)
+    val appUpdate = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    /** A newer model bundle on the server than the one installed (version), or null. */
+    val bundleUpdate = MutableStateFlow<String?>(null)
     private val repo = BundleRepository(File(app.filesDir, "bundle"))
     private val xnnCache = File(app.filesDir, "xnnpack").apply { mkdirs() }
     val log = ObservationLog.of(app)
@@ -136,7 +151,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 loadModels(files)
             }
+            checkUpdates(silent = true)
         }
+    }
+
+    /** App (app.json) and model bundle (latest.json) updates on the home server. Silent: no message when offline. */
+    fun checkUpdates(silent: Boolean = false) {
+        if (appUpdate.value is UpdateState.Checking || appUpdate.value is UpdateState.Downloading) return
+        appUpdate.value = UpdateState.Checking
+        viewModelScope.launch {
+            try {
+                val (rel, remote) = withContext(Dispatchers.IO) {
+                    updater.check(prefs.server) to runCatching { repo.remoteVersion(prefs.server) }.getOrNull()
+                }
+                val installed = repo.installed()?.first
+                bundleUpdate.value = remote?.takeIf { installed != null && it != installed }
+                appUpdate.value = if (rel != null) UpdateState.Available(rel) else UpdateState.UpToDate(remote)
+            } catch (e: Exception) {
+                appUpdate.value = if (silent) UpdateState.Idle else UpdateState.Failed(e.message ?: e.toString())
+            }
+        }
+    }
+
+    fun downloadAppUpdate() {
+        val rel = (appUpdate.value as? UpdateState.Available)?.release
+            ?: (appUpdate.value as? UpdateState.Failed)?.let { return checkUpdates() } ?: return
+        appUpdate.value = UpdateState.Downloading(rel, 0, rel.bytes)
+        viewModelScope.launch {
+            try {
+                val apk = withContext(Dispatchers.IO) {
+                    updater.download(prefs.server, rel) { d, t -> appUpdate.value = UpdateState.Downloading(rel, d, t) }
+                }
+                appUpdate.value = UpdateState.Ready(rel, apk)
+            } catch (e: Exception) {
+                appUpdate.value = UpdateState.Failed("App update download failed: ${e.message}")
+            }
+        }
+    }
+
+    /** The intent to start: the system installer, or first the one-time "allow installs from this app" screen. */
+    fun installIntent(): android.content.Intent? {
+        val ready = appUpdate.value as? UpdateState.Ready ?: return null
+        return if (updater.canInstall()) updater.installIntent(ready.apk) else updater.allowInstallsIntent()
     }
 
     // --------------------------------------------------------------------------------- navigation
@@ -228,6 +284,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val files = withContext(Dispatchers.IO) { repo.load() } ?: error("bundle incomplete after download")
                 bundle.value = BundleState.Ready(files)
                 neededVariant.value = null
+                bundleUpdate.value = null
                 history.clear()
                 screen.value = Screen.LIVE
                 loadModels(files)

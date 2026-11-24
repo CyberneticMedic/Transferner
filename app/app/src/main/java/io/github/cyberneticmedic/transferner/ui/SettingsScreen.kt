@@ -52,7 +52,8 @@ fun SettingsScreen(vm: AppViewModel) {
     Column(Modifier.fillMaxSize().background(C.paper).safeDrawingPadding()) {
         TopBar("Models & settings", R.drawable.ic_back, { vm.back() })
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionLabel("This phone")
+            UpdatesCard(vm)
+            SectionLabel("This phone", Modifier.padding(top = 6.dp))
             Card {
                 Text(device?.label ?: "…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Text("GPU for LiteRT: " + if (device?.gpuAvailable == true) "available" else "not available", fontSize = 13.sp, color = C.muted)
@@ -148,5 +149,48 @@ private fun Toggle(label: String, on: Boolean, set: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(label, fontSize = 14.sp, modifier = Modifier.weight(1f))
         Switch(checked = on, onCheckedChange = set, colors = SwitchDefaults.colors(checkedTrackColor = C.green))
+    }
+}
+
+/** In-app updates (D-042): app APK from app.json, model bundle from latest.json, both on the home server. */
+@Composable
+private fun UpdatesCard(vm: AppViewModel) {
+    val upd by vm.appUpdate.collectAsState()
+    val bundleNew by vm.bundleUpdate.collectAsState()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    SectionLabel("Updates")
+    Card {
+        Text("App ${vm.updater.currentVersionName} · models ${(vm.bundle.collectAsState().value as? BundleState.Ready)?.files?.manifest?.version ?: "none"}",
+            fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        when (val u = upd) {
+            is UpdateState.Idle -> Text("Not checked yet.", fontSize = 13.sp, color = C.muted)
+            is UpdateState.Checking -> Text("Checking ${vm.prefs.server}…", fontSize = 13.sp, color = C.muted)
+            is UpdateState.UpToDate -> Text("The app is up to date.", fontSize = 13.sp, color = C.muted)
+            is UpdateState.Failed -> Text(u.message, fontSize = 13.sp, color = C.caution)
+            is UpdateState.Available -> {
+                Text("App ${u.release.versionName} is available (%.0f MB).".format(u.release.bytes / 1048576.0), fontSize = 13.sp, color = C.ink2)
+                if (u.release.notes.isNotBlank()) Text(u.release.notes, fontSize = 12.5.sp, color = C.muted, lineHeight = 17.sp)
+                androidx.compose.material3.Button(onClick = { vm.downloadAppUpdate() }, shape = RoundedCornerShape(10.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = C.green)) { Text("Download app update") }
+            }
+            is UpdateState.Downloading -> {
+                Text("Downloading ${u.release.versionName}…", fontSize = 13.sp, color = C.ink2)
+                androidx.compose.material3.LinearProgressIndicator(progress = { if (u.total > 0) u.done.toFloat() / u.total else 0f },
+                    modifier = Modifier.fillMaxWidth(), color = C.green)
+            }
+            is UpdateState.Ready -> {
+                androidx.compose.material3.Button(onClick = { vm.installIntent()?.let { ctx.startActivity(it) } }, shape = RoundedCornerShape(10.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = C.green)) { Text("Install ${u.release.versionName}") }
+                Text(if (vm.updater.canInstall()) "Android shows its installer; your settings, models and log are kept."
+                     else "Android first asks to allow installs from Transferner. Allow it, come back, and tap Install again.",
+                    fontSize = 12.5.sp, color = C.muted, lineHeight = 17.sp)
+            }
+        }
+        bundleNew?.let { v ->
+            Text("New models available (bundle $v). Only changed files are downloaded.", fontSize = 13.sp, color = C.ink2)
+            androidx.compose.material3.Button(onClick = { vm.go(Screen.SETUP) }, shape = RoundedCornerShape(10.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = C.green)) { Text("Get new models") }
+        }
+        OutlinedButton(onClick = { vm.checkUpdates() }, shape = RoundedCornerShape(10.dp)) { Text("Check for updates", color = C.green) }
     }
 }

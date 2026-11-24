@@ -14,14 +14,24 @@ android {
         applicationId = "io.github.cyberneticmedic.transferner"
         minSdk = 29
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.4.3"
+        versionCode = 9
+        versionName = "0.5"
         ndk { abiFilters += listOf("arm64-v8a") }        // Pixel 7-9 (D-003); keeps the APK small
+    }
+    // Every sideloaded APK must carry the same signature, or Android refuses to update the installed app
+    // (and its data) in place. The key is a copy of the debug keystore kept outside ~/.android.
+    signingConfigs {
+        create("sideload") {
+            storeFile = file("/models/ml/android/signing/transferner-sideload.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")   // prototype: sideloaded, debug-signed
+            signingConfig = signingConfigs.getByName("sideload")   // prototype: sideloaded
         }
     }
     compileOptions {

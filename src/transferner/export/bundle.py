@@ -4,6 +4,7 @@ Layout under $TRANSFERNER_DATA/bundle/ (served as is by scripts/serve_bundle.sh)
   latest.json                       {"version": V, "manifest": "V/manifest.json"}
   V/manifest.json                   every file below with bytes and sha256; the app verifies each before use
   V/detector.tflite + detector.json live detector, app graph (export/detector_app.py) and its sidecar
+  V/detector_rg.tflite + .json      optional: the same detector with region outputs, group "app:11" (apps >= 0.7)
   V/focus.json                      live focus chip: genera per growth form + prior strength (D-037), optional
   V/species_<id>.tflite + species.json   BioCLIP 2.5 image tower, one file per variant (VARIANTS: gpu W8A16,
                                     cpu dynamic INT8, cpu-small INT4 + dynamic INT8; D-032/D-035). Manifest
@@ -294,7 +295,10 @@ def main() -> None:
     ap.add_argument("--no-publish", action="store_true", help="build the version directory but leave latest.json (staging)")
     ap.add_argument("--golden-uuid", default="gbif-6178854992-1")
     ap.add_argument("--text-emb", default="artifacts/text_emb.npy", help="species-name embeddings for the open-set score ('' = none)")
-    ap.add_argument("--min-app", type=int, default=10, help="lowest app versionCode that can run this bundle (D-045); 10 = app 0.6")
+    ap.add_argument("--min-app", type=int, default=0, help="lowest app versionCode that can run this bundle (D-045); 0 = every app")
+    ap.add_argument("--detector-regions", default="", help="the same detector with region_logits (detector_app --regions), shipped "
+                    "as detector_rg.* in group app:<--regions-app>: older apps skip it and run detector.tflite (D-045)")
+    ap.add_argument("--regions-app", type=int, default=11, help="lowest app versionCode that reads detector_rg.json (11 = app 0.7)")
     args = ap.parse_args()
     root = data_root()
     repo = Path(__file__).resolve().parents[3]
@@ -310,6 +314,14 @@ def main() -> None:
     shutil.copy(det_src, out / "detector.tflite")
     side["model"] = "detector.tflite"
     (out / "detector.json").write_text(json.dumps(side))
+    groups = {}
+    if args.detector_regions:
+        rside = json.loads((root / (args.detector_regions + ".json")).read_text())
+        assert rside["genera"] == side["genera"] and "region_logits" in rside["outputs"], "regions detector must match the main one"
+        shutil.copy(root / (args.detector_regions + ".tflite"), out / "detector_rg.tflite")
+        rside["model"] = "detector_rg.tflite"
+        (out / "detector_rg.json").write_text(json.dumps(rside))
+        groups.update({"detector_rg.tflite": f"app:{args.regions_app}", "detector_rg.json": f"app:{args.regions_app}"})
     focus = (root / args.detector).parent / "focus.json"                 # eval/focus_prior.py (D-037), optional
     if focus.exists():
         f = json.loads(focus.read_text())
@@ -332,7 +344,7 @@ def main() -> None:
     (out / "forage.json").write_text(json.dumps(forage(root, repo, side["genera"])))
     (out / "tuning.json").write_text(json.dumps(tuning((root / args.detector).parent)))
 
-    variants, groups = [], {}
+    variants = []
     for v in (VARIANTS[k] for k in args.variants.split(",")):
         src = root / v["file"]
         if not src.exists():

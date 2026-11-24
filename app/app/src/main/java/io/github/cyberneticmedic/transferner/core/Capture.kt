@@ -115,7 +115,10 @@ data class CaptureAnalysis(
 
 class CaptureRules(private val catalog: Catalog, private val index: WarningIndex, val tuning: Tuning) {
     private val summaries = catalog.species.map { TraitSummary.of(it, index) }
-    private val toxicOrRelative = BooleanArray(summaries.size) { summaries[it].toxic || summaries[it].relative }
+    // D-045: plus the genus union (a species whose cited congeners list toxic parts its own rows do not). Regional
+    // test: serious misses 0.11% -> 0.09% of photos (encounter-weighted 0.14% -> 0.09%), false alarms +0.4 pt
+    private val toxicOrRelative = BooleanArray(summaries.size) {
+        summaries[it].toxic || summaries[it].relative || summaries[it].congener != null }
     private val genusOf: Map<String, List<Int>> = catalog.species.indices.groupBy { catalog.species[it].genus }
 
     fun summary(i: Int) = summaries[i]
@@ -149,7 +152,8 @@ class CaptureRules(private val catalog: Catalog, private val index: WarningIndex
     }
 
     /**
-     * Banner when the summed probability of cited-toxic species and their relatives (D-038) reaches banner_sum
+     * Banner when the summed probability of cited-toxic species, their relatives (D-038; carrot family, D-045) and
+     * species with congener-only toxic parts (genus union, D-045) reaches banner_sum
      * (0.002), or a conditional-only candidate in the top 5 reaches conditional_min. The read-only audit
      * measured this against D-038's "any toxic species in the top 5, at any probability" rule: regional test
      * misses 57 -> 43 photos, false alarms 32.9% -> 23.7%. Toxic chips stay on every row regardless.
@@ -158,9 +162,9 @@ class CaptureRules(private val catalog: Catalog, private val index: WarningIndex
         var sum = 0.0
         for (i in p.indices) if (toxicOrRelative[i]) sum += p[i]
         val inTop = top.map { it to summaries[it.species.i] }.filter { (c, t) ->
-            t.toxic || t.relative || (t.conditionalParts.isNotEmpty() && c.p >= tuning.conditionalMin)
+            t.toxic || t.relative || t.congener != null || (t.conditionalParts.isNotEmpty() && c.p >= tuning.conditionalMin)
         }
-        val conditional = inTop.any { (_, t) -> !t.toxic && !t.relative }
+        val conditional = inTop.any { (_, t) -> !t.toxic && !t.relative && t.congener == null }
         val shown = top.map { it.species.i }.toSet()
         val also = p.indices.filter { toxicOrRelative[it] && it !in shown && p[it] >= 0.0005f }
             .sortedByDescending { p[it] }.take(3).map { Candidate(catalog.species[it], p[it]) to summaries[it] }

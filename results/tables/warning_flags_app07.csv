@@ -1,0 +1,101 @@
+kind,split,rule,n,miss_toxic,miss_serious,false_alarm,weighting
+capture,val,top5,20352,0.0044,0.0056,0.2704,photo
+capture,val,top5+rel,20352,0.0035,0.0048,0.3393,photo
+capture,val,p>=0.02,20352,0.0037,0.0043,0.2742,photo
+capture,val,p>=0.02+rel,20352,0.0026,0.003,0.3433,photo
+capture,val,p>=0.01,20352,0.0033,0.0035,0.2793,photo
+capture,val,p>=0.01+rel,20352,0.0024,0.0026,0.348,photo
+capture,val,p>=0.005,20352,0.0026,0.003,0.2868,photo
+capture,val,p>=0.005+rel,20352,0.0018,0.0022,0.3558,photo
+capture,val,app0.5 banner: top5 toxic/cond/rel or toxic/rel p>=0.005,20352,0.0018,0.0022,0.386,photo
+capture,val,toxic+rel sum>=0.002,20352,0.0013,0.0013,0.2351,photo
+capture,val,app0.6 banner: toxic+rel sum>=0.002 or cond-only top5 p>=0.02,20352,0.0013,0.0013,0.2459,photo
+capture,val,app0.6 strong: toxic+rel sum>=0.02,20352,0.005,0.0048,0.1382,photo
+capture,val,app0.7 banner: toxic+rel(+carrot family) sum>=0.002 or cond-only top5,20352,0.0009,0.0009,0.258,photo
+capture,val,app0.7+union: toxic+rel+congener-toxic sum>=0.002 or cond-only top5,20352,0.0009,0.0009,0.263,photo
+capture,test,top5,176590,0.0071,0.0075,0.2247,photo
+capture,test,top5+rel,176590,0.0054,0.0054,0.3056,photo
+capture,test,p>=0.02,176590,0.0052,0.0054,0.2294,photo
+capture,test,p>=0.02+rel,176590,0.004,0.0038,0.3108,photo
+capture,test,p>=0.01,176590,0.0037,0.0039,0.2365,photo
+capture,test,p>=0.01+rel,176590,0.0028,0.0026,0.318,photo
+capture,test,p>=0.005,176590,0.0026,0.0026,0.2461,photo
+capture,test,p>=0.005+rel,176590,0.0018,0.0016,0.3274,photo
+capture,test,app0.5 banner: top5 toxic/cond/rel or toxic/rel p>=0.005,176590,0.0017,0.0014,0.3541,photo
+capture,test,toxic+rel sum>=0.002,176590,0.0014,0.0013,0.2357,photo
+capture,test,app0.6 banner: toxic+rel sum>=0.002 or cond-only top5 p>=0.02,176590,0.0014,0.0013,0.2489,photo
+capture,test,app0.6 strong: toxic+rel sum>=0.02,176590,0.0038,0.004,0.1442,photo
+capture,test,app0.7 banner: toxic+rel(+carrot family) sum>=0.002 or cond-only top5,176590,0.0012,0.0011,0.2643,photo
+capture,test,app0.7+union: toxic+rel+congener-toxic sum>=0.002 or cond-only top5,176590,0.0011,0.0009,0.2681,photo
+live,val,any toxic genus p>=0.2,1304,0.1278,0.1208,0.0947,photo
+live,val,serious genus p>=0.2,1304,0.3524,0.1208,0.0696,photo
+live,val,any toxic genus p>=0.1,1304,0.0881,0.0805,0.1374,photo
+live,val,serious genus p>=0.1,1304,0.3216,0.094,0.0975,photo
+live,val,any toxic genus p>=0.05,1304,0.0441,0.047,0.1941,photo
+live,val,serious genus p>=0.05,1304,0.2687,0.047,0.143,photo
+live,val,any toxic genus p>=0.02,1304,0.0176,0.0134,0.2572,photo
+live,val,serious genus p>=0.02,1304,0.2159,0.0201,0.2033,photo
+live,val,app0.6 live: toxic genus in top8 p>=0.02,1304,0.0264,0.0268,0.2507,photo
+live,val,app0.6 live: toxic genus in top8 p>=0.02 +presence>=0.1974,1304,0.0264,0.0268,0.2498,photo
+live,val,app0.6 walk haptic: app-serious genus mass>=0.3 +presence>=0.1974,1304,0.5903,0.4295,0.039,photo
+live,test,any toxic genus p>=0.2,12358,0.1123,0.106,0.0847,photo
+live,test,serious genus p>=0.2,12358,0.3916,0.1214,0.0554,photo
+live,test,any toxic genus p>=0.1,12358,0.0638,0.0549,0.1275,photo
+live,test,serious genus p>=0.1,12358,0.3485,0.0732,0.0849,photo
+live,test,any toxic genus p>=0.05,12358,0.0316,0.0318,0.1801,photo
+live,test,serious genus p>=0.05,12358,0.3139,0.0472,0.1284,photo
+live,test,any toxic genus p>=0.02,12358,0.0121,0.0125,0.2558,photo
+live,test,serious genus p>=0.02,12358,0.2684,0.0193,0.1974,photo
+live,test,app0.6 live: toxic genus in top8 p>=0.02,12358,0.0121,0.0125,0.251,photo
+live,test,app0.6 live: toxic genus in top8 p>=0.02 +presence>=0.1974,12358,0.0134,0.0145,0.2501,photo
+live,test,app0.6 walk haptic: app-serious genus mass>=0.3 +presence>=0.1974,12358,0.578,0.3796,0.0295,photo
+capture,val,top5,20352,0.0044,0.0048,0.3054,encounter_species
+capture,val,top5+rel,20352,0.0029,0.0039,0.3684,encounter_species
+capture,val,p>=0.02,20352,0.004,0.004,0.3081,encounter_species
+capture,val,p>=0.02+rel,20352,0.0023,0.0029,0.371,encounter_species
+capture,val,p>=0.01,20352,0.0036,0.0034,0.3124,encounter_species
+capture,val,p>=0.01+rel,20352,0.0022,0.0026,0.3749,encounter_species
+capture,val,p>=0.005,20352,0.0032,0.003,0.3201,encounter_species
+capture,val,p>=0.005+rel,20352,0.0018,0.0022,0.383,encounter_species
+capture,val,app0.5 banner: top5 toxic/cond/rel or toxic/rel p>=0.005,20352,0.0018,0.0022,0.4051,encounter_species
+capture,val,toxic+rel sum>=0.002,20352,0.0014,0.001,0.2383,encounter_species
+capture,val,app0.6 banner: toxic+rel sum>=0.002 or cond-only top5 p>=0.02,20352,0.0014,0.001,0.2444,encounter_species
+capture,val,app0.6 strong: toxic+rel sum>=0.02,20352,0.0067,0.0061,0.1185,encounter_species
+capture,val,app0.7 banner: toxic+rel(+carrot family) sum>=0.002 or cond-only top5,20352,0.0008,0.0006,0.2525,encounter_species
+capture,val,app0.7+union: toxic+rel+congener-toxic sum>=0.002 or cond-only top5,20352,0.0008,0.0006,0.2567,encounter_species
+capture,test,top5,176590,0.0073,0.0081,0.2755,encounter_species
+capture,test,top5+rel,176590,0.0059,0.0061,0.3396,encounter_species
+capture,test,p>=0.02,176590,0.0059,0.0065,0.2794,encounter_species
+capture,test,p>=0.02+rel,176590,0.0049,0.005,0.3436,encounter_species
+capture,test,p>=0.01,176590,0.0045,0.0046,0.2857,encounter_species
+capture,test,p>=0.01+rel,176590,0.0039,0.0039,0.3495,encounter_species
+capture,test,p>=0.005,176590,0.0033,0.0035,0.2934,encounter_species
+capture,test,p>=0.005+rel,176590,0.0031,0.0032,0.3569,encounter_species
+capture,test,app0.5 banner: top5 toxic/cond/rel or toxic/rel p>=0.005,176590,0.0026,0.0022,0.378,encounter_species
+capture,test,toxic+rel sum>=0.002,176590,0.0024,0.0028,0.2272,encounter_species
+capture,test,app0.6 banner: toxic+rel sum>=0.002 or cond-only top5 p>=0.02,176590,0.0021,0.0021,0.2345,encounter_species
+capture,test,app0.6 strong: toxic+rel sum>=0.02,176590,0.0048,0.0057,0.1188,encounter_species
+capture,test,app0.7 banner: toxic+rel(+carrot family) sum>=0.002 or cond-only top5,176590,0.0016,0.0014,0.2445,encounter_species
+capture,test,app0.7+union: toxic+rel+congener-toxic sum>=0.002 or cond-only top5,176590,0.0014,0.0009,0.2477,encounter_species
+live,val,any toxic genus p>=0.2,1304,0.1446,0.1508,0.0973,encounter_species
+live,val,serious genus p>=0.2,1304,0.3933,0.1508,0.0711,encounter_species
+live,val,any toxic genus p>=0.1,1304,0.0954,0.0891,0.1388,encounter_species
+live,val,serious genus p>=0.1,1304,0.3634,0.1161,0.0912,encounter_species
+live,val,any toxic genus p>=0.05,1304,0.0266,0.0301,0.2088,encounter_species
+live,val,serious genus p>=0.05,1304,0.2864,0.0301,0.1393,encounter_species
+live,val,any toxic genus p>=0.02,1304,0.0097,0.005,0.2556,encounter_species
+live,val,serious genus p>=0.02,1304,0.2214,0.0076,0.1889,encounter_species
+live,val,app0.6 live: toxic genus in top8 p>=0.02,1304,0.0157,0.0149,0.2511,encounter_species
+live,val,app0.6 live: toxic genus in top8 p>=0.02 +presence>=0.1974,1304,0.0157,0.0149,0.2508,encounter_species
+live,val,app0.6 walk haptic: app-serious genus mass>=0.3 +presence>=0.1974,1304,0.5914,0.4013,0.0325,encounter_species
+live,test,any toxic genus p>=0.2,12358,0.155,0.1649,0.104,encounter_species
+live,test,serious genus p>=0.2,12358,0.4174,0.195,0.0667,encounter_species
+live,test,any toxic genus p>=0.1,12358,0.0925,0.0906,0.1545,encounter_species
+live,test,serious genus p>=0.1,12358,0.3653,0.1219,0.0994,encounter_species
+live,test,any toxic genus p>=0.05,12358,0.0329,0.0456,0.2182,encounter_species
+live,test,serious genus p>=0.05,12358,0.3189,0.0909,0.1471,encounter_species
+live,test,any toxic genus p>=0.02,12358,0.0178,0.0283,0.3286,encounter_species
+live,test,serious genus p>=0.02,12358,0.257,0.0438,0.258,encounter_species
+live,test,app0.6 live: toxic genus in top8 p>=0.02,12358,0.0178,0.0283,0.3179,encounter_species
+live,test,app0.6 live: toxic genus in top8 p>=0.02 +presence>=0.1974,12358,0.0179,0.0285,0.3165,encounter_species
+live,test,app0.6 walk haptic: app-serious genus mass>=0.3 +presence>=0.1974,12358,0.5584,0.3657,0.029,encounter_species

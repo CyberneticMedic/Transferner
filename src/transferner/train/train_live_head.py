@@ -417,12 +417,24 @@ def eval_only(root, args, init, genera, family_of, splits, size, gi, dev) -> Non
     enc = encounter_share(root, genera)
     im = pd.read_parquet(root / "manifests/images.parquet", columns=["path", "source"]).set_index("path").source
     w = args.workers_img
+    # the D-044 yardsticks (seeded composites, plant-free frames, toxic genera), built exactly as main() builds them
+    bx = pd.read_parquet(root / args.boxes, columns=["uuid", "fallback"]).merge(
+        pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
+    fb_paths = set(bx[bx.fallback].path)
+    negm = pd.read_parquet(root / "manifests/negatives.parquet")
     for split in ("val", "test"):
         m = image_eval(model, net, splits[split], size, family_of, dev, mean, std, w)
         r = image_eval(model, net, [x for x in splits[split] if im.get(x[0]) == "gbif_regional"], size, family_of, dev, mean, std, w)
+        negs = negm[(negm.kind == "plant_free") & (negm.split == split)].sample(1500, random_state=0).path.to_numpy()
+        items = [it for it in splits[split] if it[0] not in fb_paths]
+        comp = LiveBoxSet(root, items, size, 0.0, "jitter", 0.0, 1.0, 0.0, negs,
+                          negm[(negm.kind == "vegetation") & (negm.split == split)].path.to_numpy(), set(), items)
         row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"},
                **mosaic_eval(model, net, splits[split], size, anchors0, dev, mean, std, w),
-               **encounter_eval(model, net, regional_pool(root, split, gi), size, enc, dev, mean, std, w)}
+               **encounter_eval(model, net, regional_pool(root, split, gi), size, enc, dev, mean, std, w),
+               **composite_eval(model, net, comp, size, anchors0, dev, mean, std, w),
+               **negative_eval(model, net, root, negs, size, dev, mean, std, w),
+               **trait_eval(model, net, trait_items(root, gi, split), size, len(genera), dev, mean, std, w)}
         print(f"eval-only {args.eval_only} @ {size} {split} " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
 
 

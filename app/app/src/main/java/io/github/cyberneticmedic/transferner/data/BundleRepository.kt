@@ -41,7 +41,8 @@ class BundleFiles(
  * against the manifest before it is renamed into place; files already present with the right size and
  * hash are kept, so an interrupted download, or a switch to another variant, resumes file by file.
  */
-class BundleRepository(private val root: File) {
+/** [appVersion]: this app's versionCode; files grouped "app:<N>" are fetched and used only when it is >= N. */
+class BundleRepository(private val root: File, private val appVersion: Long = Long.MAX_VALUE) {
     private val current = File(root, "current.txt")          // "<version> <variant>"
 
     fun installed(): Pair<String, String>? {
@@ -54,10 +55,15 @@ class BundleRepository(private val root: File) {
         val dir = File(root, v)
         val mf = File(dir, "manifest.json").takeIf { it.exists() } ?: return null
         val manifest = BundleJson.decodeFromString<Manifest>(mf.readText())
-        if (manifest.files.filter { it.wantedFor(variant) }.any { File(dir, it.path).length() != it.bytes }) return null
+        // files every app needs must be complete; "app:<N>" files are extras (an app updated after the bundle
+        // was downloaded lacks them until missingExtras() offers the same bundle again)
+        if (manifest.files.filter { it.wantedFor(variant, 0) }.any { File(dir, it.path).length() != it.bytes }) return null
+        val have = { path: String -> manifest.files.any { it.path == path && it.wantedFor(variant, appVersion) && File(dir, path).length() == it.bytes } }
+        // the regions detector (bundle 0.7+, group "app:11") when this app has both its files; else the 3-output one
+        val det = if (have(REGIONS_META) && have(REGIONS_MODEL)) REGIONS_META else "detector.json"
         return BundleFiles(
             dir, manifest, variant,
-            BundleJson.decodeFromString(File(dir, "detector.json").readText()),
+            BundleJson.decodeFromString(File(dir, det).readText()),
             BundleJson.decodeFromString(File(dir, "species.json").readText()),
             BundleJson.decodeFromString(File(dir, "head.json").readText()),
             BundleJson.decodeFromString(File(dir, "catalog.json").readText()),
@@ -85,11 +91,20 @@ class BundleRepository(private val root: File) {
 
     fun remoteVersion(server: String): String = remoteLatest(server).version
 
+    /** True when the installed bundle has "app:<N>" files this app can use but has not fetched (the app was
+     *  updated after the bundle was downloaded). Downloading the same version again fetches only those. */
+    fun missingExtras(): Boolean {
+        val (v, variant) = installed() ?: return false
+        val dir = File(root, v)
+        val manifest = File(dir, "manifest.json").takeIf { it.exists() }?.let { BundleJson.decodeFromString<Manifest>(it.readText()) } ?: return false
+        return manifest.files.any { it.wantedFor(variant, appVersion) && !it.wantedFor(variant, 0) && File(dir, it.path).length() != it.bytes }
+    }
+
     /**
      * Blocking; call off the main thread. [choose] picks the variant from the server's species.json (or
      * returns a fixed one). Fails early, before any large file, when the phone lacks the storage.
      */
-    fun download(server: String, choose: (SpeciesModels) -> String, appVersion: Long = Long.MAX_VALUE, onProgress: (Progress) -> Unit): Pair<String, String> {
+    fun download(server: String, choose: (SpeciesModels) -> String, appVersion: Long = this.appVersion, onProgress: (Progress) -> Unit): Pair<String, String> {
         val base = if (server.endsWith("/")) server else "$server/"
         val latest = BundleJson.decodeFromString<Latest>(text(base + "latest.json"))
         if (latest.minApp > appVersion)
@@ -101,7 +116,7 @@ class BundleRepository(private val root: File) {
         val variant = choose(models)
         require(models[variant] != null) { "variant $variant is not in this bundle" }
         val dir = File(root, manifest.version).apply { mkdirs() }
-        val wanted = manifest.files.filter { it.wantedFor(variant) }
+        val wanted = manifest.files.filter { it.wantedFor(variant, appVersion) }
         val total = wanted.sumOf { it.bytes }
         val missing = wanted.filter { File(dir, it.path).length() != it.bytes }.sumOf { it.bytes }
         if (root.usableSpace < missing + 200L * 1024 * 1024)
@@ -146,7 +161,7 @@ class BundleRepository(private val root: File) {
         }
         File(dir, "manifest.json").writeText(manifestText)
         // other variants' model files are not needed on this phone
-        manifest.files.filter { !it.wantedFor(variant) }.forEach { File(dir, it.path).delete() }
+        manifest.files.filter { !it.wantedFor(variant, appVersion) }.forEach { File(dir, it.path).delete() }
         current.writeText("${manifest.version} $variant")
         root.listFiles()?.filter { it.isDirectory && it.name != manifest.version }?.forEach { it.deleteRecursively() }
         return manifest.version to variant
@@ -159,5 +174,11 @@ class BundleRepository(private val root: File) {
             while (true) { val n = inp.read(b); if (n < 0) break; md.update(b, 0, n) }
         }
         return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    companion object {
+        /** Sidecar of the detector with region outputs (bundle.py --detector-regions). */
+        const val REGIONS_META = "detector_rg.json"
+        const val REGIONS_MODEL = "detector_rg.tflite"
     }
 }

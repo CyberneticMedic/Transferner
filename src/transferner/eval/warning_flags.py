@@ -78,6 +78,10 @@ def main() -> None:
     ap.add_argument("--weighting", choices=["species", "genus"], default="species",
                     help="encounter weights per species (toxicity is a species fact) or per genus (D-040's encounter_top1)")
     ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--emb", default="artifacts/img_emb")
+    ap.add_argument("--probe", default="artifacts/probe.pt")
+    ap.add_argument("--temperature", default="artifacts/temperature.txt")
+    ap.add_argument("--out", default="", help="results table (default results/tables/warning_flags[_<live>].csv)")
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
     root = data_root()
@@ -97,15 +101,34 @@ def main() -> None:
     tox_genera = set(sp.genus[toxic])
     rel = (~has_rows) & sp.genus.isin(tox_genera).to_numpy()
     cond = sp.scientific_name.isin(set(tr[tr.category == "conditional"].scientific_name)).to_numpy()
+    # app 0.7 (D-045): carrot-family species without rows are relatives of the family's cited toxic species
+    # (Traits.kt WarningIndex.relativesOf, RISKY_FAMILIES), and the genus union: a species with rows whose other
+    # cited congeners list toxic parts its own rows do not (TraitSummary.congener), measured as a banner term
+    risky = {"Apiaceae"}
+    tox_fams = set(sp.family[toxic]) & risky
+    rel7 = rel | ((~has_rows) & sp.family.isin(tox_fams).to_numpy())
+    own = tox_rows.groupby("scientific_name").part.apply(set).to_dict()
+    gen_of = dict(zip(sp.scientific_name, sp.genus))
+    congener = np.zeros(len(sp), bool)
+    for i, (n, g) in enumerate(zip(sp.scientific_name, sp.genus)):
+        if not has_rows[i] or "whole" in own.get(n, set()):
+            continue
+        mine = own.get(n, set())
+        congener[i] = any(gen_of.get(o) == g and o != n and (parts - mine) for o, parts in own.items())
     cond_only = cond & ~toxic & ~rel             # Capture.kt: a conditional candidate that is not toxic or a relative
+    cond_only7 = cond & ~toxic & ~rel7
     tox_rel = toxic | rel
+    tox_rel7 = toxic | rel7
+    tox_rel7u = tox_rel7 | congener
     needs_caution = toxic | cond | rel           # TraitSummary.needsCaution (the 0.4-0.5 top-5 term)
     canon, twin = name_twins(sp)
     _, genus_of = np.unique(sp.genus.to_numpy(), return_inverse=True)
     counts = species_counts(root)
     enc = f"encounter_{args.weighting}"
-    pr = torch.load(root / "artifacts/probe.pt", map_location="cpu")
-    T = float((root / "artifacts/temperature.txt").read_text())
+    pr = torch.load(root / args.probe, map_location="cpu")
+    T = float((root / args.temperature).read_text())
+    nc = pr["W"].shape[0]                         # an older probe covers the first nc classes only
+    assert nc <= len(sp)
     rows = []
 
     def add(kind, split, rule, flag, y_toxic, y_serious, w, weighting):
@@ -125,14 +148,16 @@ def main() -> None:
 
     bs, bst, cmin = tun["banner_sum"], tun["banner_strong"], tun["conditional_min"]
     for split in ("val", "test"):
-        m = pd.read_parquet(root / f"artifacts/img_emb/{split}.parquet")
-        e = np.load(root / f"artifacts/img_emb/{split}.npy", mmap_mode="r")
+        m = pd.read_parquet(root / args.emb / f"{split}.parquet")
+        e = np.load(root / args.emb / f"{split}.npy", mmap_mode="r")
         keep = np.where((m.source == "gbif_regional").to_numpy())[0]
         y = m.class_idx.to_numpy()[keep]
         flags: dict[str, list] = {}
         for s in range(0, len(keep), 20000):     # chunks: test is 176,590 x 4,411 probabilities
             p = ((pr["scale"] * torch.from_numpy(np.asarray(e[keep[s:s + 20000]], dtype=np.float32))
                   @ pr["W"].float().T + pr["b"].float()) / T).softmax(-1).numpy()
+            if nc < len(sp):                      # classes the probe does not know get probability 0
+                p = np.pad(p, ((0, 0), (0, len(sp) - nc)))
             top5 = topk_idx(p, 5)
             f = {"top5": toxic[top5].any(1), "top5+rel": tox_rel[top5].any(1)}
             for t in (0.02, 0.01, 0.005):
@@ -147,6 +172,11 @@ def main() -> None:
             f[f"toxic+rel sum>={bs}"] = ssum >= bs
             f[f"app0.6 banner: toxic+rel sum>={bs} or cond-only top5 p>={cmin}"] = (ssum >= bs) | cterm
             f[f"app0.6 strong: toxic+rel sum>={bst}"] = ssum >= bst
+            s7 = pm[:, tox_rel7].astype(np.float64).sum(1)
+            c7 = (cond_only7[top5m] & (np.take_along_axis(pm, top5m, 1) >= cmin)).any(1)
+            f[f"app0.7 banner: toxic+rel(+carrot family) sum>={bs} or cond-only top5"] = (s7 >= bs) | c7
+            s7u = pm[:, tox_rel7u].astype(np.float64).sum(1)
+            f[f"app0.7+union: toxic+rel+congener-toxic sum>={bs} or cond-only top5"] = (s7u >= bs) | c7
             for k, v in f.items():
                 flags.setdefault(k, []).append(v)
         add_all("capture", split, {k: np.concatenate(v) for k, v in flags.items()}, y)
@@ -183,12 +213,14 @@ def main() -> None:
     df = df.sort_values(["_w", "_k", "_i"]).drop(columns=["_w", "_k", "_i"])
     pd.set_option("display.width", 250); pd.set_option("display.max_colwidth", 80)
     print(df.to_string(index=False))
-    out = repo / ("results/tables/warning_flags.csv" if args.live == "mnv4_shared" else f"results/tables/warning_flags_{args.live}.csv")
+    out = Path(args.out) if args.out else \
+        repo / ("results/tables/warning_flags.csv" if args.live == "mnv4_shared" else f"results/tables/warning_flags_{args.live}.csv")
     df.to_csv(out, index=False)
     print(f"relatives (no rows, genus has a cited toxic species): {rel.sum()} species; toxic genera {len(tox_genera)} "
           f"({g_tox.sum()} of the detector's {len(genera)}), serious {g_ser.sum()} (app-serious {g_ser_app.sum()}: "
           f"{sorted(g for g, a, b in zip(genera, g_ser, g_ser_app) if a and not b)[:12]}... not in the walk haptic); "
-          f"{len(twin)} name twins merged for app0.6; wrote {out}")
+          f"{len(twin)} name twins merged for app0.6; app 0.7 carrot-family relatives {int((rel7 & ~rel).sum())}, "
+          f"species with a congener-only toxic part {int(congener.sum())}; wrote {out}")
 
 
 if __name__ == "__main__":

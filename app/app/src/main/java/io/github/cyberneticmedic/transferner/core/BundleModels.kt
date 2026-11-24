@@ -17,8 +17,11 @@ data class Manifest(val version: String, val created: String = "", val files: Li
 
 @Serializable
 data class ManifestFile(val path: String, val bytes: Long, val sha256: String, val group: String? = null) {
-    /** Files of one species-model variant carry group "species:<id>"; the rest are needed by every phone. */
-    fun wantedFor(variant: String) = group == null || group == "species:$variant"
+    /** Files of one species-model variant carry group "species:<id>"; files only newer apps can run carry
+     *  "app:<versionCode>" (D-045: the regions detector, so one bundle serves 0.4-0.6 apps too, which skip any
+     *  group they do not know); the rest are needed by every phone. */
+    fun wantedFor(variant: String, app: Long = Long.MAX_VALUE) = group == null || group == "species:$variant" ||
+        (group.startsWith("app:") && (group.removePrefix("app:").toLongOrNull() ?: Long.MAX_VALUE) <= app)
 }
 
 @Serializable

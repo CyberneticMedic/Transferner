@@ -55,11 +55,11 @@ class CaptureRulesTest {
     }
 
     @Test fun bannerUsesTheSummedToxicProbability() {
-        val quiet = rules.analyze(p(0.9985f, 0.0005f, 0.0005f, 0f, 0f, 0.0005f), null)
+        val quiet = rules.analyze(p(0f, 0.0005f, 0.0005f, 0f, 0f, 0.999f), null)
         assertFalse(quiet.caution.show)                                   // 0.001 < 0.002, though toxic species are in the top 5
-        val low = rules.analyze(p(0.997f, 0.0015f, 0.0015f, 0f, 0f, 0f), null)
+        val low = rules.analyze(p(0f, 0.0015f, 0.0015f, 0f, 0f, 0.997f), null)
         assertTrue(low.caution.show); assertFalse(low.caution.strong)     // 0.003
-        val strong = rules.analyze(p(0.9f, 0.05f, 0.05f, 0f, 0f, 0f), null)
+        val strong = rules.analyze(p(0f, 0.05f, 0.05f, 0f, 0f, 0.9f), null)
         assertTrue(strong.caution.strong)
     }
 
@@ -71,13 +71,24 @@ class CaptureRulesTest {
 
     @Test fun twoPhotoBannerIsTheUnionOfAllThree() {
         val first = rules.analyze(p(0.6f, 0f, 0.3f, 0f, 0f, 0.1f), null).caution          // Cicuta 0.30: strong
-        val weak = rules.analyze(p(0.997f, 0.003f, 0f, 0f, 0f, 0f), null).caution          // red elderberry 0.003
-        val none = rules.analyze(p(1f, 0f, 0f, 0f, 0f, 0f), null).caution
+        val weak = rules.analyze(p(0f, 0.003f, 0f, 0f, 0f, 0.997f), null).caution          // red elderberry 0.003
+        val none = rules.analyze(p(0f, 0f, 0f, 0f, 0f, 1f), null).caution
         val u = io.github.cyberneticmedic.transferner.core.Caution.union(listOf(weak, first, none))
         assertTrue(u.show); assertTrue(u.strong)
         assertTrue(u.inTop.any { it.first.species.name == "Cicuta maculata" })
         assertEquals(1, u.inTop.count { it.first.species.name == "Sambucus racemosa" })   // de-duplicated
         assertFalse(io.github.cyberneticmedic.transferner.core.Caution.union(listOf(none, none)).show)
+    }
+
+    /** Genus union (D-045): edible elderberry's own rows list no toxic part, but red elderberry lists its berries,
+     *  so a confident elderberry photo still raises the banner, headed as a relative of a poisonous species. */
+    @Test fun edibleSpeciesWithToxicCongenersRaiseTheBanner() {
+        val c = rules.analyze(p(0.999f, 0f, 0f, 0f, 0f, 0.001f), null).caution
+        assertTrue(c.show && c.strong)
+        val t = c.inTop.single { it.first.species.name == "Sambucus canadensis" }.second
+        assertEquals(listOf("berries"), t.congener?.parts)
+        assertEquals("Caution: relative of a poisonous species",
+            io.github.cyberneticmedic.transferner.core.cautionHeadline(c.inTop.filter { it.first.species.name == "Sambucus canadensis" }))
     }
 
     @Test fun carrotFamilySpeciesWithoutRowsAreHemlockRelatives() {

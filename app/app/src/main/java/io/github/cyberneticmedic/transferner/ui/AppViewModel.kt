@@ -129,7 +129,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val appUpdate = MutableStateFlow<UpdateState>(UpdateState.Idle)
     /** A newer model bundle on the server than the one installed (version), or null. */
     val bundleUpdate = MutableStateFlow<String?>(null)
-    private val repo = BundleRepository(File(app.filesDir, "bundle"))
+    private val repo = BundleRepository(File(app.filesDir, "bundle"), updater.currentVersionCode)
     private val xnnCache = File(app.filesDir, "xnnpack").apply { mkdirs() }
     val log = ObservationLog.of(app)
 
@@ -217,8 +217,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val installed = repo.installed()?.first
                 val remote = latest?.version
-                // a bundle this app cannot run is not offered; the app update is (D-045)
-                bundleUpdate.value = remote?.takeIf { installed != null && it != installed && latest.minApp <= updater.currentVersionCode }
+                // a bundle this app cannot run is not offered; the app update is (D-045). The installed version is
+                // offered again when it has files only this (updated) app uses, such as the regions detector.
+                val extras = withContext(Dispatchers.IO) { runCatching { repo.missingExtras() }.getOrDefault(false) }
+                bundleUpdate.value = remote?.takeIf { installed != null && (it != installed || extras) && latest.minApp <= updater.currentVersionCode }
                 appUpdate.value = if (rel != null) UpdateState.Available(rel) else UpdateState.UpToDate(remote)
             } catch (e: Exception) {
                 appUpdate.value = if (silent) UpdateState.Idle else UpdateState.Failed(e.message ?: e.toString())

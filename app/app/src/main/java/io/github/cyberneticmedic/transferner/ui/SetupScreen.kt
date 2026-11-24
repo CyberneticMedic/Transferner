@@ -94,7 +94,7 @@ fun SetupScreen(vm: AppViewModel) {
             colors = ButtonDefaults.buttonColors(containerColor = C.green), shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) { Text(if (downloading) "Downloading…" else "Download and continue", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
-        Text("Prototype 0.2 · camera permission is asked next", fontSize = 12.sp, color = C.muted, modifier = Modifier.align(Alignment.CenterHorizontally))
+        Text("Prototype 0.3 · camera permission is asked next", fontSize = 12.sp, color = C.muted, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 

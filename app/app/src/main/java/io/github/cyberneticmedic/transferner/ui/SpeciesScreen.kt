@@ -102,8 +102,9 @@ fun SpeciesScreen(vm: AppViewModel) {
                                     Glyph(R.drawable.ic_warning, null, C.caution)
                                     Text(t.chip, color = C.caution, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                                 }
-                                if (t.toxicParts.isNotEmpty()) Text("Parts listed: " + t.toxicParts.joinToString(", "), color = C.caution, fontSize = 13.sp)
-                                Text(if (t.contactToxic) "Skin contact: dermatitis listed." else "Skin contact: no listing.", color = C.caution, fontSize = 13.sp)
+                                Text(t.detail.replaceFirstChar { it.uppercase() } + ".", color = C.caution, fontSize = 13.sp, lineHeight = 18.sp)
+                                Text(if (t.contactToxic) "Skin contact: listed as harmful." else "Skin contact: no listing.", color = C.caution, fontSize = 13.sp)
+                                Text("Severity is the source's rating (NC State: low, medium, high).", color = C.caution, fontSize = 12.sp)
                             }
                         }
                         if (!t.hasData) Note("No trait data", "No cited source in this bundle covers this species. That does not mean it is safe.")
@@ -113,7 +114,7 @@ fun SpeciesScreen(vm: AppViewModel) {
                         if (t.hasData && missing.isNotEmpty())
                             Note("${missing.joinToString(", ").replaceFirstChar { it.uppercase() }}: no listing",
                                 "Transferner only shows what a cited source states. A part with no listing is not known to be safe.")
-                        if (t.ingestionToxic) {
+                        if (t.serious && t.ingestionToxic) {
                             Button(
                                 onClick = { ctx.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:18002221222"))) },
                                 colors = ButtonDefaults.buttonColors(containerColor = C.ink), shape = RoundedCornerShape(12.dp),
@@ -174,7 +175,7 @@ private fun TraitCard(rows: List<Trait>) {
     val (label, kind) = when (r.category) {
         "edible" -> "Edible · cited" to io.github.cyberneticmedic.transferner.core.ChipKind.EDIBLE
         "conditional" -> "Edible only with conditions" to io.github.cyberneticmedic.transferner.core.ChipKind.CAUTION
-        else -> (if (r.ingestionToxic == 1) "Poisonous if eaten" + (if (r.severity.isNotBlank()) " · ${r.severity}" else "") else "Toxic") to
+        else -> ((if (r.contactToxic == 1) "Toxic to touch and eat" else "Toxic if eaten") + (if (r.severity.isNotBlank()) " · ${r.severity}" else "")) to
             io.github.cyberneticmedic.transferner.core.ChipKind.CAUTION
     }
     Column(Modifier.fillMaxWidth().background(C.card, RoundedCornerShape(12.dp)).border(1.dp, C.line, RoundedCornerShape(12.dp)).padding(14.dp),

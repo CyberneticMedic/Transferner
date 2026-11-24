@@ -190,16 +190,29 @@ fun LiveScreen(vm: AppViewModel) {
                 .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            SectionLabelDark("Live guess · whole frame")
+            // Genus when the head is fairly sure, else the family (D-036: on regional photos the shown label
+            // is right 62% of the time this way, against 56% for always showing the genus)
             val top = f?.result?.genera?.firstOrNull()
+            val sure = top != null && top.p >= 0.5f
+            SectionLabelDark(if (top == null || sure) "Live guess · whole frame" else "Live guess · family (genus unsure)")
             Row(verticalAlignment = Alignment.Bottom) {
-                Text(top?.genus ?: "—", style = Scientific, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text(top?.let { pct(it.p) } ?: "", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                if (top == null || sure) {
+                    Text(top?.genus ?: "—", style = Scientific, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text(top?.let { pct(it.p) } ?: "", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                } else {
+                    Text(f!!.result.topFamily, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text(pct(f.result.topFamilyP), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
-            Text(f?.let { "${it.result.topFamily} · family ${pct(it.result.topFamilyP)}" } ?: "Point the camera at a plant",
+            Text(
+                when {
+                    f == null || top == null -> "Point the camera at a plant"
+                    sure -> "${f.result.topFamily} · family ${pct(f.result.topFamilyP)}"
+                    else -> "Genus guesses:"
+                },
                 color = Color(0xFFD2DBD5), fontSize = 14.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                f?.result?.genera?.drop(1)?.take(3)?.forEach {
+                f?.result?.genera?.drop(if (sure) 1 else 0)?.take(3)?.forEach {
                     Text("${it.genus} ${pct(it.p)}", style = Scientific, color = Color(0xFFE4EBE6), fontSize = 13.sp,
                         modifier = Modifier.background(Color(0x1AFFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp))
                 }

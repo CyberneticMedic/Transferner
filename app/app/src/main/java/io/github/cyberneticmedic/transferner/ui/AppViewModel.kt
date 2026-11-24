@@ -412,14 +412,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return if (s >= 1f) b else Bitmap.createScaledBitmap(b, (b.width * s).toInt(), (b.height * s).toInt(), true)
     }
 
-    fun saveResult() {
+    fun saveResult(note: String = "") {
         val r = result.value ?: return
         val files = (bundle.value as? BundleState.Ready)?.files ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            log.add(r.jpeg, r.top, cautionCandidates(r.top).isNotEmpty(), files.manifest.version, files.species.variant, files.detector.model)
+            log.add(r.jpeg, r.top, cautionCandidates(r.top).isNotEmpty(), files.manifest.version, files.species.variant,
+                files.detector.model, note)
             result.value = r.copy(saved = true)
             message.value = "Saved to the log."
         }
+    }
+
+    /** Upload the log (photos + CSV) to the home server so the field captures can be analysed (D-036). */
+    fun uploadLog() {
+        if (busy.value != null) return
+        busy.value = "Sending the log…"
+        viewModelScope.launch {
+            try {
+                val n = withContext(Dispatchers.IO) {
+                    log.upload(prefs.server, deviceId()) { i, total -> busy.value = "Sending photos $i / $total…" }
+                }
+                message.value = "Sent $n new photos and the log to ${prefs.server}"
+            } catch (e: Exception) {
+                message.value = "Could not send the log: ${e.message}"
+            } finally {
+                busy.value = null
+            }
+        }
+    }
+
+    private fun deviceId(): String {
+        val model = android.os.Build.MODEL.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { "phone" }
+        return "$model-${prefs.installId}"
     }
 
     fun openSpecies(s: Species) {

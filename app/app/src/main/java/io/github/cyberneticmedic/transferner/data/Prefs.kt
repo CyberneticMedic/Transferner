@@ -55,6 +55,12 @@ class Prefs(ctx: Context) {
         get() = sp.getString("pending", null)
         set(v) { sp.edit().putString("pending", v).commit() }
 
+    /** Random per-install suffix for log uploads (tells two phones of the same model apart). */
+    val installId: String
+        get() = sp.getString("install_id", null) ?: java.util.UUID.randomUUID().toString().take(6).also {
+            sp.edit().putString("install_id", it).apply()
+        }
+
     companion object {
         const val DEFAULT_SERVER = "http://192.168.1.69:8765/"
     }

@@ -190,3 +190,31 @@ Newest at the bottom. Format: ID · date · decision · why.
     - Camera binding drops the live analysis if the camera can't run three use cases together.
     - Storage and memory are checked before download and load.
   - **Not verified:** all of this behaviour on the Moto itself. The identification time on 2 A76 cores against the 10 s budget is the open number; Settings shows it and lets the user compare 2 and 4 threads.
+- **D-036 · 2026-11-23 · Phone feedback on 0.2: live label retrain, source-faithful caution wording, field-log upload.**
+  - **User report (first phone run):**
+    - Fast, and BioCLIP ID is "mostly fine and well within the time budget".
+    - The live label needs to be more accurate.
+    - Fig and white mulberry were labelled poisonous.
+    - BioCLIP failed on yellowing elderberry leaves in low light.
+  - **Caution wording was not faithful to the source (fixed in app 0.3):**
+    - NC State lists *Ficus carica* (sap: phytophotodermatitis, low) and *Morus alba* (unripe fruit, leaf, sap: low) as poisonous, and lists their fruit as edible. 0.2 collapsed that into "Poisonous if eaten".
+    - The summary is now per part and per severity. 86 species are edible with low-toxicity parts and read "Fruit edible as described · some parts mildly toxic", with the banner naming the parts and severity.
+    - Moderate or high (or unstated) severity stays "Poisonous if eaten · <severity>", or "Toxic to touch and eat · <severity>" when contact is listed (poison ivy).
+    - The banner headline separates poisonous candidates from mildly toxic parts. The Poison Control button stays for moderate and high only.
+    - Rows are unchanged; only the summary wording changed.
+  - **Post-hoc live fixes, measured on cached whole-frame logits** (`eval/detector_prior.py`; regional val 1,304 photos, test 12,358):
+    - **Regional genus prior** (`logits + τ·log p`, from 2.27M regional observations): annual prior +0.9 pt on val, −0.5 pt on test at τ 0.25. A month prior at τ 0.5 gives +1.8 pt on val but −0.4 pt on test.
+    - Test is capped per species, so it can't show the real encounter skew. The evidence is too weak to ship a prior.
+    - **Family fallback (shipped in 0.3):** showing the family when the top genus is under 0.5 makes the shown label right 62.3% of the time on val (61.9% on test), against 57.1% (56.2%) for always showing the genus. The genus is shown on 69% of frames.
+  - **Live label retrain (`train/train_live_head.py`, run `mnv4_live`):**
+    - The whole-frame head saw only the 100K boxed photos. It now trains on all 1.37M non-specimen training photos, with no boxes needed.
+    - Each step mixes 32 boxed photos (SSD losses + image CE, to keep detection) with 96 unboxed photos.
+    - The unboxed image loss is 0.5·CE(label) + 0.5·CE(BioCLIP genus distribution), the teacher being the production probe on the cached embeddings, calibrated, summed to the 1,359 genera, top 10 kept.
+    - The head becomes MobileNetV4's own ImageNet classifier head (960 → 1280 → genera), warm-started from timm.
+    - Low-light frames are added to the augmentation (`train_detector.low_light`: 15–60% of the light, sensor noise, gain back up).
+    - Fine-tuned from `mnv4_shared`: lr 1e-3 for the new head, 3e-4 for the old heads, 1e-4 for the backbone, 3 passes (42.8K steps).
+    - Selection is on val whole-frame genus top-1, with the regional slice reported. Result: below when it lands.
+  - **Field logs:**
+    - App 0.3 sends saved captures (photos + CSV with an optional note of what the plant really is) to `scripts/bundle_server.py`, which writes them under `$TRANSFERNER_DATA/field_logs/<device>/`. Names are restricted, files are capped at 25 MB, nothing is overwritten.
+    - These are the beginning of the D-018 field set.
+    - Result screens under 0.5 top-1 now show a low-confidence hint (light, framing, organs).

@@ -125,6 +125,16 @@ class GoldenTest {
         val toothwort = TraitSummary.of(top[0].species)
         assertEquals("Edible part listed: root", toothwort.chip)
         assertEquals("No trait data", TraitSummary.of(catalog.species.first { it.name == "Cardamine dissecta" }).chip)
+        // source-faithful wording (app feedback 2026-11-23): fig and white mulberry are edible with mildly toxic
+        // parts, not "poisonous"; poison ivy leads with touch; larkspur stays poisonous
+        val chip = { n: String -> TraitSummary.of(catalog.species.first { it.name == n }) }
+        for (n in listOf("Ficus carica", "Morus alba", "Sambucus canadensis", "Toxicodendron radicans", "Delphinium tricorne", "Phytolacca americana"))
+            println("%-24s %-55s | %s".format(n, chip(n).chip, chip(n).detail))
+        assertEquals("Edible as described · some parts mildly toxic", chip("Ficus carica").chip)
+        assertEquals("Fruit edible as described · some parts mildly toxic", chip("Morus alba").chip)
+        assertTrue(!chip("Ficus carica").serious && !chip("Morus alba").serious)
+        assertEquals("Toxic to touch and eat · high", chip("Toxicodendron radicans").chip)
+        assertEquals("Poisonous if eaten · high", chip("Delphinium tricorne").chip)
     }
 
     @Test fun halfFloat() {

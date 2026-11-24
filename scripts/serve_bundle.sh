@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Serve the app prototype's APK and model bundle on the home network (D-034): plain HTTP from this account,
-# port 8765 by default. The app checks every bundle file against the bundle's SHA-256 manifest.
+# Serve the app prototype's APK and model bundle on the home network (D-034), and accept the app's
+# observation-log uploads into $TRANSFERNER_DATA/field_logs (scripts/bundle_server.py): plain HTTP from this
+# account, port 8765 by default. The app checks every bundle file against the bundle's SHA-256 manifest.
 #   bash scripts/serve_bundle.sh          start (no-op if already running)
 #   bash scripts/serve_bundle.sh stop     stop (exact PID from the pid file)
 set -euo pipefail
@@ -16,6 +17,6 @@ if [[ "${1:-}" == "stop" ]]; then
 fi
 if running; then echo "already serving (pid $(cat "$PIDF"))"; exit 0; fi
 mkdir -p "$(dirname "$LOG")"
-nohup "$PY" -m http.server "$PORT" --bind 0.0.0.0 --directory "$DIR" >> "$LOG" 2>&1 &
+nohup "$PY" "$(dirname "$0")/bundle_server.py" --port "$PORT" >> "$LOG" 2>&1 &
 echo $! > "$PIDF"
 echo "serving $DIR on port $PORT (pid $(cat "$PIDF")), log $LOG"

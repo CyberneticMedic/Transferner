@@ -39,6 +39,9 @@ fun LogScreen(vm: AppViewModel) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxSize().background(C.paper).safeDrawingPadding()) {
         TopBar("Observation log", R.drawable.ic_back, { vm.back() }) {
+            val busy by vm.busy.collectAsState()
+            OutlinedButton(onClick = { vm.uploadLog() }, enabled = busy == null && entries.isNotEmpty(), shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.padding(end = 6.dp)) { Text(busy ?: "Send", color = C.green, fontWeight = FontWeight.SemiBold, maxLines = 1) }
             OutlinedButton(
                 onClick = {
                     if (!vm.log.csv.exists()) { vm.message.value = "Nothing logged yet."; return@OutlinedButton }
@@ -48,7 +51,7 @@ fun LogScreen(vm: AppViewModel) {
                     ctx.startActivity(Intent.createChooser(send, "Export observations"))
                 },
                 shape = RoundedCornerShape(10.dp), modifier = Modifier.padding(end = 8.dp),
-            ) { Text("Export CSV", color = C.green, fontWeight = FontWeight.SemiBold) }
+            ) { Text("CSV", color = C.green, fontWeight = FontWeight.SemiBold) }
         }
         LazyColumn(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(entries) { e ->
@@ -69,13 +72,14 @@ fun LogScreen(vm: AppViewModel) {
                         Text(top?.species?.name ?: "", style = Scientific, fontSize = 13.sp, color = C.muted)
                         Text(e.time.replace('T', ' ').removeSuffix("Z") + " UTC", fontSize = 12.5.sp, color = C.muted)
                         if (e.caution) TraitChip("Caution candidate in top 5", io.github.cyberneticmedic.transferner.core.ChipKind.CAUTION)
+                        if (e.note.isNotBlank()) Text("Note: ${e.note}", fontSize = 12.5.sp, color = C.ink2)
                     }
                 }
             }
             item {
                 Column(Modifier.fillMaxWidth().background(C.noneSoft, RoundedCornerShape(14.dp)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(if (entries.isEmpty()) "No saved captures yet" else "Saved on this phone", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = C.ink2)
-                    Text("Each entry keeps the photo, the top 5 with scores, the caution flag and the model versions. Location is not recorded in this build.",
+                    Text("Each entry keeps the photo, the top 5 with scores, the caution flag, your note and the model versions. \"Send\" uploads new photos and the log to the home server for analysis. Location is not recorded in this build.",
                         fontSize = 13.sp, color = C.none, lineHeight = 18.sp)
                 }
             }

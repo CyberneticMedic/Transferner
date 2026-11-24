@@ -78,6 +78,9 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
 
     /** One upright frame. [alpha] blends this frame's genus probabilities into a running average, so the
      *  live label does not flicker between frames. */
+    /** Focus chip (D-037): per-genus logit bias, or null for no focus. Set from the detector thread. */
+    @Volatile var focusBias: FloatArray? = null
+
     fun run(argb: IntArray, w: Int, h: Int, alpha: Float = 0.4f): LiveResult {
         val t0 = System.nanoTime()
         val x = Preprocess.detectorInput(argb, w, h, meta)
@@ -85,7 +88,9 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         if (meta.input.isInt8) inBuf.writeInt8(x) else error("detector input must be int8")
         runner.run(mapOf(meta.input.name to inBuf), outBufs)
         lastMs = runner.lastMs
-        val p = Detections.softmax(outBufs.getValue(outs.imageLogits.name).readAsFloat(outs.imageLogits))
+        val logits = outBufs.getValue(outs.imageLogits.name).readAsFloat(outs.imageLogits)
+        focusBias?.let { b -> for (i in logits.indices) logits[i] += b[i] }
+        val p = Detections.softmax(logits)
         val s = smooth
         val ps = if (s == null) p else FloatArray(p.size) { alpha * p[it] + (1 - alpha) * s[it] }
         smooth = ps

@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -221,11 +223,22 @@ fun LiveScreen(vm: AppViewModel) {
                 .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            val focusMeta = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files?.focus
+            val focus by vm.focus.collectAsState()
+            if (focusMeta != null) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FocusChip("Any plant", focus == null) { vm.setFocus(null) }
+                    focusMeta.categories.forEach { c -> FocusChip(c.label, focus == c.id) { vm.setFocus(if (focus == c.id) null else c.id) } }
+                }
+            }
             // Genus when the head is fairly sure, else the family (D-036: on regional photos the shown label
             // is right 62% of the time this way, against 56% for always showing the genus)
             val top = f?.result?.genera?.firstOrNull()
             val sure = top != null && top.p >= 0.5f
-            SectionLabelDark(if (top == null || sure) "Live guess · whole frame" else "Live guess · family (genus unsure)")
+            val focusLabel = focusMeta?.categories?.firstOrNull { it.id == focus }?.label?.lowercase()
+            SectionLabelDark((if (top == null || sure) "Live guess · whole frame" else "Live guess · family (genus unsure)") +
+                (focusLabel?.let { " · focus $it" } ?: ""))
             Row(verticalAlignment = Alignment.Bottom) {
                 if (top == null || sure) {
                     Text(top?.genus ?: "—", style = Scientific, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -282,6 +295,14 @@ fun LiveScreen(vm: AppViewModel) {
             }
         }
     }
+}
+
+@Composable
+private fun FocusChip(label: String, on: Boolean, onClick: () -> Unit) {
+    Text(label, color = if (on) C.ink else Color.White, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier.background(if (on) Color.White else Color(0x24FFFFFF), RoundedCornerShape(50))
+            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp)
+            .semantics { role = Role.Button; contentDescription = "Focus: $label" + if (on) ", selected" else "" })
 }
 
 @Composable

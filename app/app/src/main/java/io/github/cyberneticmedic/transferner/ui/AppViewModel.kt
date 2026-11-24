@@ -105,6 +105,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Set when a crash or failure means this phone needs another species-model variant downloaded. */
     val neededVariant = MutableStateFlow<String?>(null)
     private val history = ArrayDeque<Screen>()
+    /** Live focus chip (D-037): a growth-form id from focus.json, or null for no focus. */
+    val focus = MutableStateFlow<String?>(null)
 
     init {
         viewModelScope.launch {
@@ -270,6 +272,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 prefs.pending = null
             }
+            focus.value?.let { id -> d.focusBias = files.focus?.bias(id, files.detector.genera.size) }
             detector = d
             models.value = models.value.copy(detector = "${d.accelerator} · loaded in ${d.loadMs} ms" +
                 (if (prefs.detectorBench.isNotBlank()) " · measured ${prefs.detectorBench}" else ""), detectorReady = true)
@@ -328,6 +331,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun reloadModels() {
         (bundle.value as? BundleState.Ready)?.let { loadModels(it.files) }
+    }
+
+    fun setFocus(id: String?) {
+        focus.value = id
+        val files = (bundle.value as? BundleState.Ready)?.files
+        val bias = if (id == null) null else files?.focus?.bias(id, files.detector.genera.size)
+        detectorExecutor.execute { detector?.let { it.focusBias = bias; it.resetSmoothing() } }
     }
 
     fun rerunDetectorBenchmark() {

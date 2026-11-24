@@ -167,6 +167,7 @@ def main() -> None:
     ap.add_argument("--init", default="artifacts/detector/mnv4_shared/best.pt")
     ap.add_argument("--boxes", default="manifests/boxes.parquet")
     ap.add_argument("--image-head", type=int, default=1280)
+    ap.add_argument("--size", type=int, default=0, help="input size (default: configs/detector.yaml model.input, 320)")
     ap.add_argument("--epochs", type=int, default=3, help="passes over the unboxed photos")
     ap.add_argument("--batch-box", type=int, default=32)
     ap.add_argument("--batch-img", type=int, default=96)
@@ -188,7 +189,8 @@ def main() -> None:
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     root, dev = data_root(), "cuda"
-    size = cfg["model"]["input"]
+    size = args.size or cfg["model"]["input"]
+    args.size = size
     init = torch.load(root / args.init, map_location="cpu")
     genera, family_of, families, splits = load_items(root, args.boxes, init["args"].get("fallback", "keep"), 0, args.seed)
     out_dir = root / "artifacts/detector" / args.name
@@ -228,15 +230,17 @@ def main() -> None:
     missing, unexpected = model.load_state_dict(init["model"], strict=False)
     print(f"init from {args.init}: missing {sorted({k.split('.')[1] + '.' + k.split('.')[2] for k in missing})}, "
           f"unexpected {sorted({k.split('.')[1] + '.' + k.split('.')[2] for k in unexpected})}", flush=True)
-    if args.image_head == 1280:                  # MobileNetV4's own ImageNet head: 960 -> 1280 conv + BN
+    fresh_head = any(k.startswith("head.image_cls") for k in missing)      # else: continuing a trained head
+    if fresh_head and args.image_head == 1280:   # MobileNetV4's own ImageNet head: 960 -> 1280 conv + BN
         tm = timm.create_model(cfg["model"]["backbone"], pretrained=True)
         model.head.image_cls[1].weight.data.copy_(tm.conv_head.weight.data)
         bn = model.head.image_cls[2]
         for k in ("weight", "bias", "running_mean", "running_var"):
             getattr(bn, k).data.copy_(getattr(tm.norm_head, k).data)
         del tm
-    torch.nn.init.normal_(model.head.image_cls[-1].weight, std=0.01)
-    torch.nn.init.zeros_(model.head.image_cls[-1].bias)
+    if fresh_head:
+        torch.nn.init.normal_(model.head.image_cls[-1].weight, std=0.01)
+        torch.nn.init.zeros_(model.head.image_cls[-1].bias)
     model.to(dev)
     use_shift_add_depthwise(model)
     python_headers_for_triton()
@@ -280,7 +284,7 @@ def main() -> None:
             torch.save({"model": model.state_dict(), "epoch": step, "args": {**init["args"], **vars(args), "head": "shared",
                         "aux_image": 1.0}, "val": row}, out_dir / "best.pt")
 
-    evaluate_now()                                # the init checkpoint's head is new: a floor, not a baseline
+    evaluate_now()                                # a new head: a floor; a continued one: the baseline
     done = False
     for ep in range(args.epochs):
         for ximg, y, tidx, tp in dl_img:

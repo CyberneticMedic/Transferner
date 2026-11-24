@@ -4,6 +4,7 @@ Layout under $TRANSFERNER_DATA/bundle/ (served as is by scripts/serve_bundle.sh)
   latest.json                       {"version": V, "manifest": "V/manifest.json"}
   V/manifest.json                   every file below with bytes and sha256; the app verifies each before use
   V/detector.tflite + detector.json live detector, app graph (export/detector_app.py) and its sidecar
+  V/focus.json                      live focus chip: genera per growth form + prior strength (D-037), optional
   V/species_<id>.tflite + species.json   BioCLIP 2.5 image tower, one file per variant (VARIANTS: gpu W8A16,
                                     cpu dynamic INT8, cpu-small INT4 + dynamic INT8; D-032/D-035). Manifest
                                     group "species:<id>": a phone downloads only its own variant
@@ -252,6 +253,11 @@ def main() -> None:
     shutil.copy(det_src, out / "detector.tflite")
     side["model"] = "detector.tflite"
     (out / "detector.json").write_text(json.dumps(side))
+    focus = (root / args.detector).parent / "focus.json"                 # eval/focus_prior.py (D-037), optional
+    if focus.exists():
+        f = json.loads(focus.read_text())
+        f.pop("check", None)
+        (out / "focus.json").write_text(json.dumps(f))
 
     pr = torch.load(root / args.probe, map_location="cpu")
     W = pr["W"].float().numpy()

@@ -107,10 +107,10 @@ def main() -> None:
     torch.set_num_threads(args.threads)
     torch.manual_seed(args.seed)
     root, cfg = data_root(), load("detector")
-    size = cfg["model"]["input"]
     d = root / "artifacts/detector" / args.name
     labels = json.loads((d / "labels.json").read_text())
     ck = torch.load(d / args.ckpt, map_location="cpu")
+    size = ck["args"].get("size") or cfg["model"]["input"]
     model = build(len(labels["genera"]), cfg["model"]["backbone"], size, pretrained=False,
                   head=ck["args"].get("head", "ssdlite"), image_aux=ck["args"].get("aux_image", 0) > 0,
                   image_head=ck["args"].get("image_head", 0))

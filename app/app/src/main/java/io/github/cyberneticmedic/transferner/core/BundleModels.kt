@@ -135,3 +135,19 @@ data class Species(
 
 @Serializable
 data class Catalog(val species: List<Species>, val region: List<String> = emptyList())
+
+/** focus.json (eval/focus_prior.py, D-037): genera that can take each growth form, and the soft-prior strength. */
+@Serializable
+data class FocusCategory(val id: String, val label: String, val genera: List<Int>)
+
+@Serializable
+data class FocusMeta(val eps: Float, val categories: List<FocusCategory>, val source: String = "") {
+    /** Per-genus logit bias for [id]: 0 inside the category (or without habit data), ln(eps) outside. */
+    fun bias(id: String, nGenera: Int): FloatArray? {
+        val c = categories.firstOrNull { it.id == id } ?: return null
+        val out = if (eps <= 0f) -1e9f else kotlin.math.ln(eps)
+        val b = FloatArray(nGenera) { out }
+        for (g in c.genera) if (g in 0 until nGenera) b[g] = 0f
+        return b
+    }
+}

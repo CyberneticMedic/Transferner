@@ -41,10 +41,10 @@ def main() -> None:
     ap.add_argument("--boxes", default="manifests/boxes.parquet")
     args = ap.parse_args()
     root, cfg = data_root(), load("detector")
-    size = cfg["model"]["input"]
     d = root / "artifacts/detector" / args.name
     labels = json.loads((d / "labels.json").read_text())
     ck = torch.load(d / "best.pt", map_location="cpu")
+    size = ck["args"].get("size") or cfg["model"]["input"]
     genera, family_of, families, splits = load_items(root, args.boxes, ck["args"].get("fallback", "keep"), 0, 0)
     assert genera == labels["genera"]
     G = len(genera)
@@ -56,7 +56,8 @@ def main() -> None:
         data = {s: (z[f"{s}_logits"], z[f"{s}_y"], z[f"{s}_path"]) for s in ("val", "test")}
     else:
         dev = "cuda"
-        model = build(G, cfg["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True)
+        model = build(G, cfg["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True,
+                      image_head=ck["args"].get("image_head", 0))
         model.load_state_dict(ck["model"])
         mean = torch.tensor(model.backbone.mean, device=dev).view(1, 3, 1, 1)
         std = torch.tensor(model.backbone.std, device=dev).view(1, 3, 1, 1)

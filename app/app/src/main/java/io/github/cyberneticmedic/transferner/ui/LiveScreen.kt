@@ -47,6 +47,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size as GSize
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import kotlin.math.min
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
@@ -131,6 +141,9 @@ fun LiveScreen(vm: AppViewModel) {
     }
 
     val frame by vm.live.collectAsState()
+    var topBarBottom by remember { mutableFloatStateOf(0f) }
+    var sheetTop by remember { mutableFloatStateOf(Float.MAX_VALUE) }
+    val measurer = rememberTextMeasurer()
     val models by vm.models.collectAsState()
     val busy by vm.busy.collectAsState()
     val showBoxes = vm.prefs.showBoxes
@@ -141,7 +154,10 @@ fun LiveScreen(vm: AppViewModel) {
         else Text("Camera permission is needed for the live view. You can still identify a photo from the gallery.",
             color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
 
-        // detector boxes, mapped from the squashed model input back onto the FILL_CENTER preview
+        // Detector boxes, mapped from the squashed model input onto the FILL_CENTER preview, then clipped to the
+        // part of the screen not covered by the top bar and the bottom sheet. Most live boxes cover nearly the
+        // whole frame (regional test photos: median 93% of the frame), which 0.2 drew off-screen or under the
+        // overlays; such a box is now shown as brackets on the visible area, labelled "plant fills the frame".
         val f = frame
         if (showBoxes && f != null && f.result.boxes.isNotEmpty()) {
             Canvas(Modifier.fillMaxSize()) {
@@ -149,32 +165,47 @@ fun LiveScreen(vm: AppViewModel) {
                 val ox = (size.width - f.frameW * s) / 2
                 val oy = (size.height - f.frameH * s) / 2
                 val k = f.result.size.toFloat()
-                for (b in f.result.boxes) {
-                    val x0 = ox + b.x0 / k * f.frameW * s
-                    val y0 = oy + b.y0 / k * f.frameH * s
-                    val x1 = ox + b.x1 / k * f.frameW * s
-                    val y1 = oy + b.y1 / k * f.frameH * s
-                    val c = 28.dp.toPx()
-                    val st = Stroke(width = 3.dp.toPx())
-                    val w = Color.White.copy(alpha = 0.4f + 0.6f * b.score)
-                    for ((p, q) in listOf(
-                        Offset(x0, y0) to Offset(x0 + c, y0), Offset(x0, y0) to Offset(x0, y0 + c),
-                        Offset(x1, y0) to Offset(x1 - c, y0), Offset(x1, y0) to Offset(x1, y0 + c),
-                        Offset(x0, y1) to Offset(x0 + c, y1), Offset(x0, y1) to Offset(x0, y1 - c),
-                        Offset(x1, y1) to Offset(x1 - c, y1), Offset(x1, y1) to Offset(x1, y1 - c),
-                    )) drawLine(w, p, q, strokeWidth = st.width)
+                val inset = 14.dp.toPx()
+                val vis = Rect(inset, topBarBottom + inset, size.width - inset, min(sheetTop, size.height) - inset)
+                if (vis.width <= 0f || vis.height <= 0f) return@Canvas
+                val stroke = 3.dp.toPx()
+                val label = { text: String, at: Offset ->
+                    val m = measurer.measure(text, TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold))
+                    val pad = 6.dp.toPx()
+                    drawRoundRect(Color(0xB80A0E0C), at, GSize(m.size.width + 2 * pad, m.size.height + pad), CornerRadius(6.dp.toPx()))
+                    drawText(m, topLeft = Offset(at.x + pad, at.y + pad / 2))
+                }
+                for ((i, b) in f.result.boxes.withIndex()) {
+                    val r = Rect(ox + b.x0 / k * f.frameW * s, oy + b.y0 / k * f.frameH * s,
+                                 ox + b.x1 / k * f.frameW * s, oy + b.y1 / k * f.frameH * s).intersect(vis)
+                    if (r.width <= 0f || r.height <= 0f) continue
+                    val c = Color.White.copy(alpha = 0.55f + 0.45f * b.score)
+                    if (i == 0 && r.width * r.height >= 0.8f * vis.width * vis.height) {
+                        val L = 34.dp.toPx()
+                        for ((p, q) in listOf(
+                            vis.topLeft to Offset(vis.left + L, vis.top), vis.topLeft to Offset(vis.left, vis.top + L),
+                            vis.topRight to Offset(vis.right - L, vis.top), vis.topRight to Offset(vis.right, vis.top + L),
+                            vis.bottomLeft to Offset(vis.left + L, vis.bottom), vis.bottomLeft to Offset(vis.left, vis.bottom - L),
+                            vis.bottomRight to Offset(vis.right - L, vis.bottom), vis.bottomRight to Offset(vis.right, vis.bottom - L),
+                        )) drawLine(c, p, q, strokeWidth = stroke)
+                        label("Plant fills the frame · ${pct(b.score)}", Offset(vis.left + 10.dp.toPx(), vis.top + 10.dp.toPx()))
+                    } else {
+                        drawRoundRect(c, r.topLeft, r.size, CornerRadius(10.dp.toPx()), style = Stroke(width = stroke))
+                        label("Plant ${pct(b.score)}", Offset(r.left + 6.dp.toPx(), r.top + 6.dp.toPx()))
+                    }
                 }
             }
         }
 
         Row(
-            Modifier.fillMaxWidth().background(Color(0x9E0A0E0C)).statusBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.fillMaxWidth().background(Color(0x9E0A0E0C)).onGloballyPositioned { topBarBottom = it.boundsInParent().bottom }
+                .statusBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Transferner", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             val status = when {
                 !models.detectorReady -> "Loading models…"
-                showTimings && f != null -> "Live · %.0f ms".format(f.modelMs + f.preMs)
+                showTimings && f != null -> "Live · %.0f ms · %d box%s".format(f.modelMs + f.preMs, f.result.boxes.size, if (f.result.boxes.size == 1) "" else "es")
                 else -> "Live"
             }
             Row(Modifier.background(Color(0x24FFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp),
@@ -185,7 +216,7 @@ fun LiveScreen(vm: AppViewModel) {
         }
 
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().onGloballyPositioned { sheetTop = it.boundsInParent().top }
                 .background(C.sheet, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                 .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),

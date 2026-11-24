@@ -91,7 +91,8 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         smooth = ps
         val obj = outBufs.getValue(outs.objectness.name).readAsFloat(outs.objectness)
         val reg = outBufs.getValue(outs.boxes.name).readAsFloat(outs.boxes)
-        val boxes = Detections.boxes(obj, Detections.decode(reg, meta), meta, maxBoxes = 5).filter { it.score >= 0.5f }
+        // 0.4 (0.2 used 0.5): on 300 regional test photos the best box scored >= 0.5 in 87%, >= 0.3 in 97%; at most 3 boxes
+        val boxes = Detections.boxes(obj, Detections.decode(reg, meta), meta, maxBoxes = 3).filter { it.score >= 0.4f }
         val (genera, fam, famP) = Detections.genera(ps, meta)
         return LiveResult(genera, fam, famP, boxes, meta.size)
     }

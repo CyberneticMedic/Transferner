@@ -8,7 +8,8 @@ embeddings, so this fine-tunes the D-033 detector (mnv4_shared) with two streams
   unboxed   --batch-img photos from all 1.37M: image loss only, (1 - kd) * CE(genus label) +
             kd * CE(BioCLIP genus distribution), the teacher being the production probe (D-030) on the
             cached embeddings, calibrated (T), summed to the detector's genera, top 10 kept.
-The whole-frame branch becomes MobileNetV4's own classifier head (pool, 960 -> 1280, BN, ReLU, classifier),
+Half the boxed samples are 2x2 mosaics (--mosaic) so the detector learns several smaller plants per frame, and
+a mosaic val metric tracks it. The whole-frame branch becomes MobileNetV4's own classifier head (pool, 960 -> 1280, BN, ReLU, classifier),
 initialised from the ImageNet checkpoint's head (--image-head). Both streams add low-light frames
 (train_detector.low_light) to the walking-video augmentation. Selection: val whole-frame genus top-1 (all
 of val; the regional slice is reported), test once at the end. Writes artifacts/detector/<name>/ and a row
@@ -30,9 +31,10 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision.io import ImageReadMode, decode_image
 from torchvision.transforms import v2
 
+from ..eval.metrics import coco_map
 from ..utils.config import data_root, load
 from ..utils.csvlog import RunLog
-from .train_detector import (BoxSet, Net, anchors_for, build, collate, evaluate, field_degrade, forward_raw,
+from .train_detector import (BoxSet, Net, anchors_for, build, collate, detect, evaluate, field_degrade, forward_raw,
                              load_items, python_headers_for_triton, ssd_loss_batched, use_shift_add_depthwise)
 
 
@@ -85,6 +87,60 @@ class ImgSet(Dataset):
         return img, int(self.labels[i]), torch.from_numpy(self.tidx[i].astype(np.int64)), torch.from_numpy(self.tp[i].astype(np.float32))
 
 
+class MosaicBoxSet(Dataset):
+    """Boxed photos, and with probability p a 2x2 mosaic of four of them at half size (YOLO-style): the
+    observation photos are close-ups whose box is mostly the whole frame (regional test: median top box 93% of
+    the frame), so the live view drew no useful box. Mosaics teach several smaller plants per frame. A mosaic
+    has no single genus, so its image label is 0 (ignored by the image loss). With train=False and p=1 it
+    builds deterministic mosaics of consecutive photos for the mosaic validation metric."""
+
+    def __init__(self, root, items, size, train, p, low_light_p=0.0, seed=0):
+        self.full = BoxSet(root, items, size, train, low_light_p)
+        self.tile = BoxSet(root, items, size // 2, train, low_light_p)
+        self.size, self.p, self.train = size, p, train
+        self.n = len(items) if train else len(items) // 4
+
+    def __len__(self):
+        return len(self.full) if self.train else self.n
+
+    def __getitem__(self, i):
+        if self.train and float(torch.rand(())) >= self.p:
+            return self.full[i]
+        idx = [i] + torch.randint(0, len(self.full), (3,)).tolist() if self.train else [4 * i + k for k in range(4)]
+        h = self.size // 2
+        img = torch.zeros(3, self.size, self.size, dtype=torch.uint8)
+        boxes, labels = [], []
+        for k, j in enumerate(idx):
+            t, b, lab, _ = self.tile[j]
+            oy, ox = (k // 2) * h, (k % 2) * h
+            img[:, oy:oy + h, ox:ox + h] = t
+            boxes.append(b + torch.tensor([ox, oy, ox, oy], dtype=b.dtype))
+            labels.append(lab)
+        return img, torch.cat(boxes), torch.cat(labels), 0
+
+
+def mosaic_eval(model, net, items, size, anchors0, dev, mean, std, workers, n=2000) -> dict:
+    """Class-agnostic box AP on deterministic 2x2 mosaics of the first n val photos: several plants per
+    frame, each about a quarter of it, the live walking view the close-up photos lack."""
+    model.eval()
+    dets, gts = {k: [] for k in ("img", "score", "box")}, {k: [] for k in ("img", "box")}
+    k0 = 0
+    dl = DataLoader(MosaicBoxSet(data_root(), items[:n], size, False, 1.0), batch_size=64, num_workers=workers, collate_fn=collate)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        for imgs, boxes, _, _ in dl:
+            out = forward_raw(net, ((imgs.to(dev).float() / 255) - mean) / std)
+            res, _ = detect(model.box_coder, {k: v.float() for k, v in out.items()}, anchors0, size)
+            for i, r in enumerate(res):
+                dets["img"].append(np.full(len(r["ascore"]), k0 + i)); dets["score"].append(r["ascore"]); dets["box"].append(r["abox"])
+                gts["img"].append(np.full(len(boxes[i]), k0 + i)); gts["box"].append(boxes[i].numpy())
+            k0 += len(res)
+    model.train()
+    d = {k: np.concatenate(v) for k, v in dets.items()}
+    g = {k: np.concatenate(v) for k, v in gts.items()}
+    m = coco_map(d["img"], np.zeros(len(d["img"]), int), d["score"], d["box"], g["img"], np.zeros(len(g["img"]), int), g["box"])
+    return {"mosaic_agnostic_ap50": m["ap50"], "mosaic_agnostic_map": m["map"]}
+
+
 def image_eval(model, net, items, size, family_of, dev, mean, std, workers) -> dict:
     """Whole-frame genus top-1/top-5 and family top-1 on a list of (path, boxes, labels) items."""
     fam = torch.as_tensor(family_of, device=dev)
@@ -121,6 +177,7 @@ def main() -> None:
     ap.add_argument("--kd", type=float, default=0.5, help="weight of the BioCLIP soft target in the image loss")
     ap.add_argument("--img-weight", type=float, default=1.0)
     ap.add_argument("--low-light", type=float, default=0.2)
+    ap.add_argument("--mosaic", type=float, default=0.5, help="share of boxed samples that are 2x2 mosaics")
     ap.add_argument("--sampler-power", type=float, default=0.5)
     ap.add_argument("--eval-every", type=int, default=4000, help="steps")
     ap.add_argument("--workers-img", type=int, default=14)
@@ -159,7 +216,7 @@ def main() -> None:
     train = splits["train"]
     nb = np.bincount([lab[0] for _, _, lab in train], minlength=len(genera) + 1)
     wb = np.array([nb[lab[0]] for _, _, lab in train], float) ** -args.sampler_power
-    dl_box = DataLoader(BoxSet(root, train, size, True, low_light_p=args.low_light), batch_size=args.batch_box,
+    dl_box = DataLoader(MosaicBoxSet(root, train, size, True, args.mosaic, args.low_light), batch_size=args.batch_box,
                         num_workers=args.workers_box, collate_fn=collate, pin_memory=True, drop_last=True,
                         persistent_workers=True, prefetch_factor=4,
                         sampler=WeightedRandomSampler(torch.as_tensor(wb), len(train), replacement=True,
@@ -214,7 +271,8 @@ def main() -> None:
         nonlocal best, best_step
         m = image_eval(model, net, splits["val"], size, family_of, dev, mean, std, args.workers_img)
         r = image_eval(model, net, val_reg, size, family_of, dev, mean, std, args.workers_img)
-        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}}
+        mo = mosaic_eval(model, net, splits["val"], size, anchors0, dev, mean, std, args.workers_img)
+        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo}
         log.log(step, "val", **row)
         print(f"step {step} val " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
         if m["image_genus_top1"] > best:
@@ -238,8 +296,8 @@ def main() -> None:
                 out = forward_raw(net, x)
             l_box, l_cls = ssd_loss_batched(model, {k: out[k][:nbx] for k in ("cls_logits", "bbox_regression")}, anchors0, targets)
             il = out["image_logits"].float()
-            hard = torch.cat([genus.to(dev) - 1, y.to(dev)])
-            l_hard = F.cross_entropy(il, hard)
+            hard = torch.cat([genus.to(dev) - 1, y.to(dev)])          # mosaics: genus 0 -> -1, ignored
+            l_hard = F.cross_entropy(il, hard, ignore_index=-1)
             logp = F.log_softmax(il[nbx:], -1)
             l_kd = -(tp.to(dev) * logp.gather(1, tidx.to(dev))).sum(1).mean()
             l_img = (1 - args.kd) * l_hard + args.kd * l_kd
@@ -274,6 +332,7 @@ def main() -> None:
     ck = torch.load(out_dir / "best.pt", map_location=dev)
     model.load_state_dict(ck["model"])
     test = image_eval(model, net, splits["test"], size, family_of, dev, mean, std, args.workers_img)
+    test.update(mosaic_eval(model, net, splits["test"], size, anchors0, dev, mean, std, args.workers_img))
     det = evaluate(model, net, DataLoader(BoxSet(root, splits["test"], size, False), batch_size=64, num_workers=args.workers_img,
                                           collate_fn=collate), anchors0, size, family_of, dev, mean, std, False, amp)
     print(f"best step {best_step}: test {test} | detection {det}", flush=True)
@@ -282,7 +341,7 @@ def main() -> None:
                 epochs=args.epochs, steps=step, best_step=best_step, n_unboxed=len(u), hours=round((time.time() - t_start) / 3600, 2),
                 **{f"val_{k}": round(v, 4) for k, v in ck["val"].items()},
                 **{f"test_{k}": round(v, 4) for k, v in test.items() if k != "n"},
-                test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4))
+                mosaic=args.mosaic, test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4))
     log.close()
 
 

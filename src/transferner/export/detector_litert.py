@@ -16,7 +16,7 @@ Recipes:
 
 Check: --images images of --split through float PyTorch and through the .tflite (or PT2E graph), both scored
 by train_detector.evaluate_with (genus mAP/AP50, class-agnostic AP50, image genus/family top-1), plus the
-cosine of the class logits. x86 latency is a proxy only (phone latency and NPU compile need the device).
+cosine of the class logits (first --cos-images images). x86 latency is a proxy only (phone latency and NPU compile need the device).
 Appends a row to results/tables/export_check.csv (recipe detector_<name>_<tag>)."""
 from __future__ import annotations
 
@@ -63,6 +63,7 @@ def main() -> None:
     ap.add_argument("--images", type=int, default=512)
     ap.add_argument("--split", default="val")
     ap.add_argument("--calib", type=int, default=256)
+    ap.add_argument("--cos-images", type=int, default=64, help="first N check images for the logit cosine (memory)")
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--min-free-gb", type=float, default=8.0)
     ap.add_argument("--seed", type=int, default=0)
@@ -92,7 +93,9 @@ def main() -> None:
     load_x = lambda items: torch.cat([((imgs.float() / 255) - mean) / std for imgs, *_ in
                                       DataLoader(BoxSet(root, items, size, False), batch_size=32, num_workers=4,
                                                  collate_fn=collate)])
-    dl = DataLoader(BoxSet(root, check, size, False), batch_size=16, num_workers=4, collate_fn=collate)
+    # Materialised once, before litert_torch/JAX is imported: forking loader workers from the converted,
+    # JAX-threaded process later on duplicated its memory and tripped the memory guard (2026-11-23).
+    dl = list(DataLoader(BoxSet(root, check, size, False), batch_size=16, num_workers=4, collate_fn=collate))
     anchors0 = anchors_for(model, size, "cpu")
     score = lambda run: evaluate_with(run, model.box_coder, dl, anchors0, size, family_of, "cpu", mean, std)
 
@@ -107,10 +110,11 @@ def main() -> None:
 
         def float_run(x):
             o = exp(x)
-            ref_logits.append(o[0])
+            if sum(len(t) for t in ref_logits) < args.cos_images:     # logits are (A, G+1) = 17.6 MB per image
+                ref_logits.append(o[0])
             return {"cls_logits": o[0], "bbox_regression": o[1]}
         ref = score(float_run)
-    ref_logits = torch.cat(ref_logits)
+    ref_logits = torch.cat(ref_logits)[:args.cos_images]
     row.update({f"float_{k}": round(v, 4) for k, v in ref.items() if k != "n_images"})
     print("float:", ref, f"({time.time() - t0:.0f} s)", flush=True)
 
@@ -131,11 +135,12 @@ def main() -> None:
             def q_run(x):
                 with torch.no_grad():
                     o = m(x)
-                q_logits.append(o[0])
+                if sum(len(t) for t in q_logits) < args.cos_images:
+                    q_logits.append(o[0])
                 return o
             got = score(per_image(q_run))
             row.update(status="pt2e_only", peak_rss_gb=round(peak_rss_gb(), 1))
-            finish(row, ref, got, ref_logits, torch.cat(q_logits))
+            finish(row, ref, got, ref_logits, torch.cat(q_logits)[:args.cos_images])
             return
     else:
         m = exp
@@ -179,12 +184,13 @@ def main() -> None:
             if np.issubdtype(od["dtype"], np.integer):
                 v = (v - z) * s
             o.append(torch.from_numpy(v))
-        q_logits.append(o[0])
+        if len(q_logits) < args.cos_images:
+            q_logits.append(o[0])
         return o
     got = score(per_image(tfl))
     row.update(status="ok", x86_ms_median=round(1000 * float(np.median(times[1:])), 1),
                peak_rss_gb=round(peak_rss_gb(), 1))
-    finish(row, ref, got, ref_logits, torch.cat(q_logits))
+    finish(row, ref, got, ref_logits, torch.cat(q_logits)[:args.cos_images])
 
 
 def finish(row, ref, got, ref_logits, q_logits) -> None:

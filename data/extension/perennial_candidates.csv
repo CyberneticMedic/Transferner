@@ -1,0 +1,245 @@
+query_name,common_name,group,kind,habit,priority,note
+Olea europaea,olive,edible,perennial,evergreen tree (zone 8-10),1,user's field miss (capture said Buxus sempervirens 0.39); planted in coastal SC/GA yards
+Epipremnum aureum,golden pothos,toxic,perennial,evergreen vine; tender: porch/patio container plant outdoors in summer,1,user's field miss (capture said Ipomoea tricolor 0.30); calcium oxalate
+Cycas revoluta,sago palm,toxic,perennial,evergreen cycad (zone 8-10),1,cycasin: seeds and all parts can be fatal (liver); very common in SC/GA yards
+Zamia integrifolia,coontie,toxic,perennial,evergreen cycad (zone 8b-11),2,cycasin as in sago palm; native to FL/coastal GA and planted
+Taxus baccata,English yew,toxic,perennial,evergreen shrub or tree (zone 6-7),1,taxine: seeds and foliage can be fatal; red aril looks like a berry; foundation shrub in TN/NC
+Taxus cuspidata,Japanese yew,toxic,perennial,evergreen shrub (zone 6-7),1,taxine as in English yew
+Taxus × media,Anglojap yew,toxic,perennial,evergreen shrub (zone 6-7),1,taxine; the commonest planted yew hybrid
+Podocarpus macrophyllus,yew plum pine,toxic,perennial,evergreen shrub or tree (zone 8-10),1,looks like yew; seeds reported toxic; very common hedge in coastal SC/GA
+Convallaria majalis,lily of the valley,toxic,perennial,rhizomatous herbaceous perennial (zone 6-8),1,cardiac glycosides; leaves confused with ramps
+Digitalis purpurea,foxglove,toxic,perennial,biennial or short-lived perennial that self-seeds and persists (zone 6-8),1,cardiac glycosides; rosette leaves confused with comfrey or borage
+Colchicum autumnale,autumn crocus,toxic,perennial,cormous perennial (zone 6-8),1,colchicine; leaves confused with ramps or wild garlic; deaths recorded
+Brugmansia suaveolens,angel's trumpet,toxic,perennial,woody shrub; dies back and resprouts (zone 8-10),1,tropane alkaloids; common in SC/GA gardens
+Brugmansia × candida,angel's trumpet,toxic,perennial,woody shrub (zone 8-10),1,tropane alkaloids
+Brugmansia arborea,angel's trumpet,toxic,perennial,woody shrub (zone 9-10),2,tropane alkaloids
+Brugmansia aurea,golden angel's trumpet,toxic,perennial,woody shrub (zone 9-10),2,tropane alkaloids
+Datura inoxia,downy thorn-apple,toxic,perennial,tender perennial grown in gardens (zone 8-10),1,tropane alkaloids; often sold as a perennial 'moonflower'
+Datura wrightii,sacred datura,toxic,perennial,herbaceous perennial from a tuberous root (zone 7-10),1,tropane alkaloids
+Aconitum napellus,monkshood,toxic,perennial,herbaceous perennial (zone 6-7),1,aconitine: among the most toxic garden plants; also through skin
+Aconitum carmichaelii,Chinese monkshood,toxic,perennial,herbaceous perennial (zone 6-8),1,aconitine
+Delphinium elatum,candle larkspur,toxic,perennial,herbaceous perennial (zone 6-7),2,diterpenoid alkaloids
+Helleborus orientalis,Lenten rose,toxic,perennial,evergreen herbaceous perennial (zone 6-9),1,very common shade plant in the region; cardiac glycosides and protoanemonin
+Helleborus × hybridus,Lenten rose hybrids,toxic,perennial,evergreen herbaceous perennial (zone 6-9),1,the hellebore actually sold; as H. orientalis
+Helleborus niger,Christmas rose,toxic,perennial,evergreen herbaceous perennial (zone 6-8),1,as H. orientalis
+Helleborus foetidus,stinking hellebore,toxic,perennial,evergreen herbaceous perennial (zone 6-9),2,as H. orientalis
+Daphne odora,winter daphne,toxic,perennial,evergreen shrub (zone 7-9),1,mezerein; red berries; common in SE gardens
+Pieris japonica,Japanese andromeda,toxic,perennial,evergreen shrub (zone 6-8),1,grayanotoxins
+Rhododendron indicum,Indica azalea,toxic,perennial,evergreen shrub (zone 7-9),1,grayanotoxins; the Southern Indica azaleas planted everywhere in SC/GA
+Rhododendron simsii,Indian azalea,toxic,perennial,evergreen shrub (zone 8-10),1,grayanotoxins; a parent of the Southern Indica azaleas
+Rhododendron × pulchrum,Southern Indica azalea,toxic,perennial,evergreen shrub (zone 7-9),1,grayanotoxins
+Rhododendron mucronatum,snow azalea,toxic,perennial,evergreen shrub (zone 6-9),2,grayanotoxins
+Rhododendron obtusum,Kurume azalea,toxic,perennial,evergreen shrub (zone 6-9),2,grayanotoxins
+Rhododendron yedoense,Yodogawa azalea,toxic,perennial,semi-evergreen shrub (zone 6-8),2,grayanotoxins
+Rhododendron ponticum,pontic rhododendron,toxic,perennial,evergreen shrub (zone 6-8),3,"grayanotoxins; hybrid parent of many garden rhododendrons, rare as the species"
+Prunus laurocerasus,cherry laurel,toxic,perennial,evergreen shrub (zone 6-9),1,cyanogenic leaves and seeds; one of the commonest hedges in the region
+Prunus lusitanica,Portugal laurel,toxic,perennial,evergreen shrub (zone 7-9),2,cyanogenic leaves and seeds
+Aesculus hippocastanum,horse chestnut,toxic,perennial,deciduous tree (zone 6-7),1,aesculin and saponins; nuts confused with sweet chestnut
+Laburnum anagyroides,golden chain tree,toxic,perennial,deciduous tree (zone 6-7),1,cytisine; seeds in pea-like pods
+Laburnum × watereri,Voss's laburnum,toxic,perennial,deciduous tree (zone 6-7),2,cytisine
+Styphnolobium japonicum,Japanese pagoda tree,toxic,perennial,deciduous tree (zone 6-8),2,toxic seeds and pods; planted street tree
+Vernicia fordii,tung oil tree,toxic,perennial,deciduous tree (zone 8-10),1,seeds look like nuts and are highly toxic; naturalised in south GA
+Wisteria floribunda,Japanese wisteria,toxic,perennial,woody vine (zone 6-9),2,toxic seeds and pods
+Hedera hibernica,Irish ivy,toxic,perennial,evergreen woody vine (zone 6-9),2,saponins and contact dermatitis; often recorded as H. helix
+Hedera colchica,Persian ivy,toxic,perennial,evergreen woody vine (zone 6-9),3,saponins
+Hedera algeriensis,Algerian ivy,toxic,perennial,evergreen woody vine (zone 7-10),3,saponins
+Buxus microphylla,Japanese boxwood,toxic,perennial,evergreen shrub (zone 6-9),2,alkaloids; very common hedge
+Buxus sinica,Korean boxwood,toxic,perennial,evergreen shrub (zone 6-9),3,alkaloids
+Ligustrum lucidum,glossy privet,toxic,perennial,evergreen tree or shrub (zone 7-10),2,toxic berries
+Ligustrum vulgare,common privet,toxic,perennial,deciduous shrub (zone 6-8),2,toxic berries
+Ligustrum ovalifolium,California privet,toxic,perennial,semi-evergreen shrub (zone 6-8),2,toxic berries
+Hydrangea paniculata,panicle hydrangea,toxic,perennial,deciduous shrub (zone 6-8),2,cyanogenic glycosides
+Hydrangea serrata,mountain hydrangea,toxic,perennial,deciduous shrub (zone 6-8),3,cyanogenic glycosides
+Hydrangea anomala,climbing hydrangea,toxic,perennial,deciduous woody vine (zone 6-7),3,cyanogenic glycosides
+Euonymus europaeus,European spindle,toxic,perennial,deciduous shrub (zone 6-7),3,"toxic fruit; European species, occasional in TN/NC gardens"
+Ilex aquifolium,English holly,toxic,perennial,evergreen tree or shrub (zone 6-8),2,toxic berries
+Skimmia japonica,Japanese skimmia,toxic,perennial,evergreen shrub (zone 6-8),2,toxic berries
+Lantana montevidensis,trailing lantana,toxic,perennial,woody perennial groundcover (zone 8-10),2,toxic unripe fruit as in Lantana camara
+Duranta erecta,golden dewdrop,toxic,perennial,woody shrub; dies back (zone 8-10),2,toxic berries
+Cestrum nocturnum,night-blooming jessamine,toxic,perennial,woody shrub (zone 8-10),2,toxic berries and leaves
+Cestrum parqui,green cestrum,toxic,perennial,woody shrub (zone 8-10),3,toxic berries and leaves
+Cascabela thevetia,yellow oleander,toxic,perennial,woody shrub (zone 9-11),2,cardiac glycosides as in oleander; rare outdoors except coastal zone 9
+Asclepias curassavica,tropical milkweed,toxic,perennial,tender perennial (zone 8-10),2,cardenolides; very common in butterfly gardens
+Euphorbia characias,Mediterranean spurge,toxic,perennial,evergreen subshrub (zone 7-9),2,irritant latex
+Euphorbia myrsinites,donkey-tail spurge,toxic,perennial,evergreen herbaceous perennial (zone 6-8),2,irritant latex
+Euphorbia amygdaloides,wood spurge,toxic,perennial,evergreen herbaceous perennial (zone 6-9),3,irritant latex
+Arum italicum,Italian arum,toxic,perennial,tuberous perennial (zone 6-9),1,calcium oxalate; red berries; naturalises in SE yards and woods
+Zantedeschia aethiopica,calla lily,toxic,perennial,rhizomatous perennial (zone 8-10),2,calcium oxalate
+Caladium bicolor,caladium,toxic,perennial,tuberous perennial; hardy only in zone 9+ but planted yearly in summer beds,2,calcium oxalate
+Alocasia odora,upright elephant ear,toxic,perennial,tuberous perennial (zone 8-11),2,calcium oxalate; confused with taro (a food plant)
+Alocasia macrorrhizos,giant taro,toxic,perennial,tuberous perennial (zone 9-11),2,calcium oxalate; confused with taro (a food plant)
+Xanthosoma sagittifolium,arrowleaf elephant ear,toxic,perennial,tuberous perennial (zone 9-11),3,calcium oxalate raw; confused with taro
+Narcissus tazetta,paperwhite narcissus,toxic,perennial,bulb (zone 8-10),1,lycorine; bulbs confused with onions and leaves with wild onion
+Narcissus jonquilla,jonquil,toxic,perennial,bulb (zone 6-9),1,lycorine; old-yard daffodil of the South
+Narcissus poeticus,poet's daffodil,toxic,perennial,bulb (zone 6-8),2,lycorine
+Narcissus × incomparabilis,daffodil,toxic,perennial,bulb (zone 6-9),2,lycorine
+Hyacinthus orientalis,hyacinth,toxic,perennial,bulb (zone 6-8),2,toxic bulb; contact dermatitis
+Tulipa gesneriana,garden tulip,toxic,perennial,bulb (zone 6-8),2,toxic bulb; contact dermatitis (tulip fingers)
+Galanthus nivalis,snowdrop,toxic,perennial,bulb (zone 6-8),2,toxic bulb (lycorine type)
+Galanthus elwesii,giant snowdrop,toxic,perennial,bulb (zone 6-9),3,toxic bulb
+Leucojum aestivum,summer snowflake,toxic,perennial,bulb (zone 6-9),2,toxic bulb; very common in old SE yards
+Lycoris radiata,red spider lily,toxic,perennial,bulb (zone 7-10),1,lycorine; extremely common in SC/GA yards in September
+Lycoris squamigera,surprise lily,toxic,perennial,bulb (zone 6-8),2,lycorine
+Muscari armeniacum,grape hyacinth,toxic,perennial,bulb (zone 6-8),3,reported toxic bulb
+Scilla siberica,Siberian squill,toxic,perennial,bulb (zone 6-8),3,cardiac glycosides
+Eranthis hyemalis,winter aconite,toxic,perennial,tuberous perennial (zone 6-7),3,cardiac glycosides
+Crocus vernus,spring crocus,toxic,perennial,corm (zone 6-8),3,looks like autumn crocus (Colchicum)
+Crocus tommasinianus,early crocus,toxic,perennial,corm (zone 6-8),3,looks like autumn crocus (Colchicum)
+Crocus sativus,saffron crocus,edible,perennial,corm (zone 6-8),3,spice crop; deadly look-alike Colchicum
+Iris sibirica,Siberian iris,toxic,perennial,rhizomatous perennial (zone 6-8),3,irritant rhizome
+Iris ensata,Japanese iris,toxic,perennial,rhizomatous perennial (zone 6-8),3,irritant rhizome
+Iris domestica,blackberry lily,toxic,perennial,rhizomatous perennial (zone 6-9),3,berry-like seeds; reported toxic
+Agapanthus praecox,lily of the Nile,toxic,perennial,rhizomatous perennial (zone 8-10),3,irritant sap; reported toxic
+Agapanthus africanus,African lily,toxic,perennial,rhizomatous perennial (zone 8-10),3,irritant sap; reported toxic
+Lilium lancifolium,tiger lily,both,perennial,bulb (zone 6-9),2,bulbs used as food in Asia (reported); deadly to cats
+Lilium longiflorum,Easter lily,toxic,perennial,bulb (zone 7-9),3,deadly to cats
+Lilium formosanum,Formosa lily,toxic,perennial,bulb (zone 7-10),3,naturalised in SE; deadly to cats
+Lamprocapnos spectabilis,bleeding heart,toxic,perennial,herbaceous perennial (zone 6-8),2,isoquinoline alkaloids
+Aquilegia vulgaris,European columbine,toxic,perennial,herbaceous perennial (zone 6-8),3,cyanogenic and protoanemonin-type toxins
+Papaver orientale,oriental poppy,toxic,perennial,herbaceous perennial (zone 6-7),2,opium-type alkaloids in latex
+Anemone hupehensis,Japanese anemone,toxic,perennial,herbaceous perennial (zone 6-8),3,protoanemonin
+Lupinus polyphyllus,garden lupine,toxic,perennial,herbaceous perennial (zone 6-7),3,quinolizidine alkaloids in seeds
+Alkekengi officinarum,Chinese lantern,toxic,perennial,rhizomatous perennial (zone 6-8),2,unripe fruit and leaves toxic; looks like groundcherries (food plants); GBIF name for Physalis alkekengi
+Clematis armandii,evergreen clematis,toxic,perennial,evergreen woody vine (zone 7-9),2,protoanemonin
+Clematis montana,anemone clematis,toxic,perennial,woody vine (zone 6-8),3,protoanemonin
+Ruta graveolens,common rue,toxic,perennial,evergreen subshrub (zone 6-9),2,phototoxic sap (blistering); sold as an herb
+Symphytum officinale,comfrey,both,perennial,herbaceous perennial (zone 6-9),2,pyrrolizidine alkaloids (liver); grown as an herb; confused with foxglove rosettes
+Tanacetum vulgare,common tansy,toxic,perennial,herbaceous perennial (zone 6-8),2,thujone
+Artemisia absinthium,wormwood,both,perennial,woody-based perennial (zone 6-9),3,thujone; grown as an herb
+Juniperus sabina,savin juniper,toxic,perennial,evergreen shrub (zone 6-7),3,highly toxic foliage and berries
+Juniperus chinensis,Chinese juniper,toxic,perennial,evergreen shrub or tree (zone 6-9),3,very common foundation conifer
+Gardenia jasminoides,gardenia,toxic,perennial,evergreen shrub (zone 7-10),3,reported mildly toxic; one of the commonest SE shrubs
+Symphoricarpos albus,common snowberry,toxic,perennial,deciduous shrub (zone 6-7),3,toxic white berries
+Viburnum opulus,guelder rose,both,perennial,deciduous shrub (zone 6-8),2,raw berries toxic; cooked used
+Sambucus nigra,European elder,both,perennial,deciduous shrub (zone 6-8),2,cultivars (Black Lace) common; raw parts cyanogenic
+Pyracantha coccinea,scarlet firethorn,both,perennial,evergreen shrub (zone 6-9),2,fruit used after cooking (reported); seeds cyanogenic
+Pyracantha koidzumii,Formosa firethorn,both,perennial,evergreen shrub (zone 7-9),2,fruit used after cooking (reported); seeds cyanogenic
+Pyracantha angustifolia,narrowleaf firethorn,both,perennial,evergreen shrub (zone 7-9),3,fruit used after cooking (reported); seeds cyanogenic
+Ginkgo biloba,ginkgo,both,perennial,deciduous tree,3,seeds used as food after cooking (reported); ginkgotoxin and urushiol-like pulp
+Cephalotaxus harringtonia,Japanese plum yew,toxic,perennial,evergreen shrub (zone 6-9),2,NCSU lists poisonous parts; looks like yew
+Diospyros kaki,Japanese persimmon,edible,perennial,deciduous tree (zone 7-10),2,common backyard fruit in SC/GA
+Ziziphus jujuba,jujube,edible,perennial,deciduous tree (zone 6-9),2,backyard fruit; on the forage alert list
+Cydonia oblonga,quince,edible,perennial,deciduous tree (zone 6-9),3,old-yard fruit tree
+Chaenomeles speciosa,flowering quince,edible,perennial,deciduous shrub (zone 6-9),3,very common old-yard shrub; fruit used after cooking (reported)
+Chaenomeles japonica,Japanese quince,edible,perennial,deciduous shrub (zone 6-9),3,fruit used after cooking (reported)
+Prunus domestica,European plum,both,perennial,deciduous tree (zone 6-9),2,backyard fruit; cyanogenic pits and leaves
+Prunus salicina,Japanese plum,both,perennial,deciduous tree (zone 6-9),2,the plum grown in the South; cyanogenic pits
+Prunus cerasus,sour cherry,both,perennial,deciduous tree (zone 6-7),3,cyanogenic pits and leaves
+Prunus armeniaca,apricot,both,perennial,deciduous tree (zone 6-8),3,cyanogenic kernels
+Prunus amygdalus,almond,both,perennial,deciduous tree (zone 7-9),3,bitter forms cyanogenic; GBIF name for Prunus dulcis
+Prunus mume,Japanese apricot,both,perennial,deciduous tree (zone 6-9),3,ornamental and fruit; unripe fruit cyanogenic
+Prunus tomentosa,Nanking cherry,both,perennial,deciduous shrub (zone 6-7),3,cyanogenic pits
+Prunus cerasifera,cherry plum,both,perennial,deciduous tree (zone 6-9),2,purple-leaf plum is a very common yard tree; cyanogenic pits
+Pyrus pyrifolia,Asian pear,edible,perennial,deciduous tree (zone 6-9),2,backyard fruit
+Malus floribunda,Japanese flowering crabapple,both,perennial,deciduous tree (zone 6-8),3,cyanogenic seeds; common ornamental
+Citrus limon,lemon,edible,perennial,evergreen tree (zone 9-11; containers),2,phototoxic peel oil; Meyer lemon is the lemon grown outdoors in coastal SC/GA
+Citrus × meyeri,Meyer lemon,edible,perennial,evergreen shrub (zone 8b-11; containers),2,the lemon actually grown outdoors in coastal SC/GA
+Citrus reticulata,mandarin,edible,perennial,evergreen tree (zone 8b-11),2,satsumas are grown in coastal SC/GA
+Citrus unshiu,satsuma,edible,perennial,evergreen tree (zone 8b-11),2,the hardiest sweet citrus; common in coastal GA/SC
+Citrus × sinensis,"sour orange, sweet orange, grapefruit",edible,perennial,evergreen tree (zone 9-11),3,GBIF lumps sweet orange and grapefruit into Citrus × aurantium; old coastal yard citrus
+Citrus × aurantium,sour orange,edible,perennial,evergreen tree (zone 9-11),3,old coastal yard citrus
+Citrus × paradisi,grapefruit,edible,perennial,evergreen tree (zone 9-11),3,coastal only
+Citrus japonica,kumquat,edible,perennial,evergreen shrub (zone 8b-11),2,hardy enough for coastal SC/GA
+Citrus junos,yuzu,edible,perennial,evergreen tree (zone 7b-10),3,cold-hardy citrus
+Citrus aurantiifolia,key lime,edible,tender,"evergreen tree; hardy only in zone 10-11, container plant here",3,tender
+Actinidia deliciosa,kiwifruit,edible,perennial,woody vine (zone 7-9),3,audit capture_model-2: largely covered by in-set A. chinensis
+Actinidia arguta,hardy kiwi,edible,perennial,woody vine (zone 6-8),2,backyard vine fruit
+Ribes rubrum,red currant,edible,perennial,deciduous shrub (zone 6-7),3,mountain gardens
+Ribes nigrum,blackcurrant,edible,perennial,deciduous shrub (zone 6-7),3,mountain gardens
+Ribes uva-crispa,gooseberry,edible,perennial,deciduous shrub (zone 6-7),3,mountain gardens
+Rubus idaeus,red raspberry,edible,perennial,perennial canes (zone 6-8),2,backyard berries
+Fragaria × ananassa,garden strawberry,edible,perennial,herbaceous perennial (zone 6-9),2,the garden strawberry
+Morus nigra,black mulberry,edible,perennial,deciduous tree (zone 7-9),3,backyard fruit
+Juglans regia,English walnut,edible,perennial,deciduous tree (zone 6-8),2,planted nut tree
+Corylus avellana,European hazelnut,edible,perennial,deciduous shrub (zone 6-8),2,planted nut shrub
+Castanea sativa,European chestnut,edible,perennial,deciduous tree (zone 6-8),3,planted nut tree; confusable with horse chestnut
+Musa acuminata,banana,edible,perennial,herbaceous perennial; dies back and resprouts (zone 8b-11),2,grown in coastal SC/GA
+Musa × paradisiaca,plantain and banana,edible,perennial,herbaceous perennial (zone 9-11),2,grown in coastal SC/GA
+Musa basjoo,Japanese fibre banana,edible,perennial,herbaceous perennial; root-hardy (zone 6-10),3,the hardy banana actually planted in zone 6-8; fruit small and seedy
+Elaeagnus multiflora,goumi,edible,perennial,deciduous shrub (zone 6-9),3,backyard fruit
+Cornus mas,Cornelian cherry,edible,perennial,deciduous tree (zone 6-8),3,backyard fruit
+Cornus kousa,kousa dogwood,edible,perennial,deciduous tree (zone 6-8),2,very common ornamental; grown for its fruit
+Mespilus germanica,medlar,edible,perennial,deciduous tree (zone 6-8),3,rare old-orchard fruit
+Opuntia ficus-indica,Indian fig cactus,edible,perennial,cactus (zone 8b-11),3,grown for pads and fruit; glochids
+Butia capitata,pindo palm,edible,perennial,palm (zone 8-11),2,very common in coastal SC/GA; grown for its fruit
+Butia odorata,jelly palm,edible,perennial,palm (zone 8-11),2,the pindo palm under its current name
+Persea americana,avocado,edible,tender,"evergreen tree; hardy in zone 9b-11, pit-grown houseplants here",3,audit names it missing; rarely outdoors in the region; leaves and pits toxic to animals
+Passiflora edulis,passion fruit,edible,tender,"woody vine; hardy in zone 9b-11, usually killed by winter in the region",3,tender
+Lycium barbarum,goji,edible,perennial,deciduous shrub (zone 6-9),3,backyard fruit
+Vitis vinifera,wine grape,edible,perennial,woody vine (zone 6-9),2,vineyards and arbors in NC/GA/TN
+Vitis labrusca,fox grape,edible,perennial,woody vine (zone 6-8),2,Concord-type grapes
+Rosa rugosa,rugosa rose,edible,perennial,deciduous shrub (zone 6-7),3,grown for hips
+Rosa banksiae,Lady Banks' rose,edible,perennial,evergreen woody vine (zone 7-9),3,very common in SE yards
+Rosa chinensis,China rose,edible,perennial,deciduous shrub (zone 7-9),3,parent of most garden roses; grown for hips and petals
+Rosa canina,dog rose,edible,perennial,deciduous shrub (zone 6-8),3,grown for hips
+Rhaphiolepis indica,Indian hawthorn,edible,perennial,evergreen shrub (zone 8-10),3,one of the commonest SE hedges
+Camellia sinensis,tea plant,edible,perennial,evergreen shrub (zone 7-9),2,tea is grown in SC; also an ornamental
+Laurus nobilis,bay laurel,edible,perennial,evergreen tree or shrub (zone 8-10),2,culinary herb in coastal yards; confused with toxic cherry laurel
+Rheum rhabarbarum,rhubarb,both,perennial,herbaceous perennial (zone 6-7),2,leaves toxic (oxalate); grown for its stalks
+Rheum × hybridum,garden rhubarb,both,perennial,herbaceous perennial (zone 6-7),2,leaves toxic (oxalate); grown for its stalks
+Cynara cardunculus,artichoke and cardoon,edible,perennial,herbaceous perennial (zone 7-9),2,perennial vegetable
+Armoracia rusticana,horseradish,edible,perennial,herbaceous perennial (zone 6-9),2,perennial vegetable; escapes
+Allium fistulosum,Welsh onion,edible,perennial,bulb (zone 6-9),3,perennial onion
+Allium tuberosum,garlic chives,edible,perennial,bulb (zone 6-9),2,perennial herb; escapes
+Allium ampeloprasum,leek and elephant garlic,edible,perennial,bulb (zone 6-9),3,perennial; naturalises
+Allium × proliferum,Egyptian walking onion,edible,perennial,bulb (zone 6-9),3,perennial onion
+Rumex acetosa,garden sorrel,edible,perennial,herbaceous perennial (zone 6-8),3,oxalate; perennial vegetable
+Levisticum officinale,lovage,edible,perennial,herbaceous perennial (zone 6-8),3,perennial herb; Apiaceae (hemlock family)
+Matteuccia struthiopteris,ostrich fern,edible,perennial,herbaceous fern (zone 6-7),2,fiddleheads used as food after cooking (reported); planted in mountain gardens
+Hosta plantaginea,August lily,both,perennial,herbaceous perennial (zone 6-9),2,shoots used as food in Japan (reported); saponins; toxic look-alike Veratrum
+Hosta sieboldiana,Siebold's hosta,both,perennial,herbaceous perennial (zone 6-8),2,as H. plantaginea
+Hosta ventricosa,blue hosta,both,perennial,herbaceous perennial (zone 6-8),3,as H. plantaginea
+Hosta undulata,wavy hosta,both,perennial,herbaceous perennial (zone 6-8),3,as H. plantaginea
+Hosta sieboldii,narrow-leaved hosta,both,perennial,herbaceous perennial (zone 6-8),3,as H. plantaginea
+Polygonatum odoratum,fragrant Solomon's seal,both,perennial,rhizomatous perennial (zone 6-8),3,shoots used as food in Asia (reported); berries toxic
+Hemerocallis lilioasphodelus,lemon daylily,edible,perennial,herbaceous perennial (zone 6-9),3,daylily buds used as food (reported); Hemerocallis fulva is in the set
+Chrysanthemum × morifolium,florist's chrysanthemum,both,perennial,herbaceous perennial (zone 6-9),2,the fall garden mum; flowers used for tea; contact dermatitis
+Dahlia pinnata,garden dahlia,edible,perennial,tuberous perennial (zone 7-10),3,tubers used as food historically (reported); common summer beds
+Yucca aloifolia,Spanish bayonet,edible,perennial,evergreen shrub (zone 8-11),3,flowers used as food (reported); very common coastal planting
+Yucca gloriosa,mound-lily yucca,edible,perennial,evergreen shrub (zone 7-11),3,flowers used as food (reported); coastal planting
+Phyllostachys edulis,moso bamboo,both,perennial,running bamboo (zone 7-10),3,shoots used as food after cooking (reported); raw shoots cyanogenic
+Phyllostachys aurea,golden bamboo,both,perennial,running bamboo (zone 6-10),2,invasive yard bamboo; shoots used as food after cooking (reported)
+Phyllostachys bambusoides,Japanese timber bamboo,both,perennial,running bamboo (zone 7-10),3,shoots used as food after cooking (reported)
+Phyllostachys nigra,black bamboo,both,perennial,running bamboo (zone 7-10),3,shoots used as food after cooking (reported)
+Thymus vulgaris,garden thyme,edible,perennial,woody subshrub (zone 6-9),2,culinary herb (audit capture_model-2: missing)
+Thymus serpyllum,creeping thyme,edible,perennial,woody groundcover (zone 6-8),3,culinary herb and groundcover
+Thymus × citriodorus,lemon thyme,edible,perennial,woody subshrub (zone 6-9),3,culinary herb
+Origanum vulgare,oregano,edible,perennial,herbaceous perennial (zone 6-9),2,culinary herb
+Origanum majorana,sweet marjoram,edible,perennial,tender perennial (zone 8-10),3,culinary herb
+Lavandula angustifolia,English lavender,edible,perennial,evergreen subshrub (zone 6-8),2,herb (audit capture_model-2: missing)
+Lavandula × intermedia,lavandin,edible,perennial,evergreen subshrub (zone 6-9),3,herb
+Lavandula stoechas,Spanish lavender,edible,perennial,evergreen subshrub (zone 7-9),3,herb
+Lavandula dentata,French lavender,edible,perennial,evergreen subshrub (zone 8-10),3,herb
+Melissa officinalis,lemon balm,edible,perennial,herbaceous perennial (zone 6-9),2,herb; escapes
+Salvia officinalis,common sage,edible,perennial,woody subshrub (zone 6-8),2,culinary herb
+Salvia elegans,pineapple sage,edible,perennial,tender perennial (zone 8-10),3,herb
+Artemisia dracunculus,tarragon,edible,perennial,herbaceous perennial (zone 6-8),3,culinary herb
+Satureja montana,winter savory,edible,perennial,woody subshrub (zone 6-8),3,culinary herb
+Hyssopus officinalis,hyssop,edible,perennial,woody subshrub (zone 6-8),3,herb
+Agastache foeniculum,anise hyssop,edible,perennial,herbaceous perennial (zone 6-8),3,herb and pollinator plant
+Aloysia citrodora,lemon verbena,edible,perennial,woody shrub; tender (zone 8-10),3,herb
+Cymbopogon citratus,lemongrass,edible,tender,"clumping grass; hardy in zone 9b-11, grown as an annual in the region",3,herb; grown as an annual north of zone 9
+Chamaemelum nobile,Roman chamomile,edible,perennial,herbaceous perennial (zone 6-9),3,herb
+Valeriana officinalis,valerian,edible,perennial,herbaceous perennial (zone 6-8),3,herb
+Tanacetum parthenium,feverfew,both,perennial,short-lived perennial (zone 6-9),3,herb; contact dermatitis
+Stevia rebaudiana,stevia,edible,perennial,tender perennial (zone 8-11),3,herb
+Dieffenbachia seguine,dumb cane,toxic,houseplant,houseplant (not hardy outdoors),1,calcium oxalate; indoor
+Monstera deliciosa,Swiss cheese plant,both,houseplant,houseplant (not hardy outdoors),2,calcium oxalate; indoor
+Philodendron hederaceum,heartleaf philodendron,toxic,houseplant,houseplant (not hardy outdoors),2,calcium oxalate; indoor
+Spathiphyllum wallisii,peace lily,toxic,houseplant,houseplant (not hardy outdoors),2,calcium oxalate; indoor
+Zamioculcas zamiifolia,ZZ plant,toxic,houseplant,houseplant (not hardy outdoors),3,calcium oxalate; indoor
+Dracaena trifasciata,snake plant,toxic,houseplant,houseplant (not hardy outdoors),3,saponins; indoor
+Aloe vera,aloe,both,houseplant,houseplant; outdoors only in zone 9b+,2,latex is a strong laxative; indoor
+Ficus elastica,rubber plant,toxic,houseplant,houseplant (not hardy outdoors),3,irritant latex; indoor
+Ficus benjamina,weeping fig,toxic,houseplant,houseplant (not hardy outdoors),3,irritant latex; indoor
+Crassula ovata,jade plant,toxic,houseplant,houseplant (not hardy outdoors),3,toxic to pets; indoor
+Euphorbia pulcherrima,poinsettia,toxic,houseplant,houseplant (not hardy outdoors),3,irritant latex; indoor
+Euphorbia milii,crown of thorns,toxic,houseplant,houseplant (not hardy outdoors),2,irritant latex; indoor
+Clivia miniata,bush lily,toxic,houseplant,houseplant (not hardy outdoors),3,lycorine; indoor
+Kalanchoe blossfeldiana,florist kalanchoe,toxic,houseplant,houseplant (not hardy outdoors),3,bufadienolides; indoor
+Capsicum annuum,pepper,edible,annual_crop,annual crop in the region,3,excluded: grown as an annual (user: no annual crops)
+Allium cepa,onion,edible,annual_crop,annual or biennial crop,3,excluded: annual crop
+Allium sativum,garlic,edible,annual_crop,grown as an annual crop,3,excluded: annual crop
+Phaseolus vulgaris,common bean,edible,annual_crop,annual crop,3,excluded: annual crop
+Petroselinum crispum,parsley,edible,annual_crop,biennial grown as an annual,3,excluded: grown as an annual
+Anethum graveolens,dill,edible,annual_crop,annual herb,3,excluded: annual

@@ -68,20 +68,29 @@ def targets() -> pd.DataFrame:
 
 def fetch(min_gap: float = 1.0) -> None:
     t = targets()
+    t.to_parquet(out_dir() / "targets.parquet", index=False)
+    fetch_pages(list(t.slug), min_gap)
+
+
+def fetch_pages(slugs: list[str], min_gap: float = 1.0) -> None:
+    """Fetch /plants/<slug>/ for each slug not yet cached, at most one request per min_gap seconds.
+
+    Split out of fetch() so callers with their own slug list (the cultivated-perennial extension,
+    data/extension/) reuse the same cache, log and rate limit without overwriting targets.parquet,
+    which parse() reads for the label set."""
     d = out_dir()
-    t.to_parquet(d / "targets.parquet", index=False)
     log_p = d / "fetch_log.tsv"
     s = session()
     last, n_new = 0.0, 0
-    for i, r in enumerate(t.itertuples()):
-        p = d / "pages" / f"{r.slug}.html"
+    for i, slug_ in enumerate(slugs):
+        p = d / "pages" / f"{slug_}.html"
         if p.exists():
             continue
         wait = min_gap - (time.monotonic() - last)
         if wait > 0:
             time.sleep(wait)
         last = time.monotonic()
-        url = f"{BASE}/plants/{r.slug}/"
+        url = f"{BASE}/plants/{slug_}/"
         try:
             resp = s.get(url, timeout=60)
             code = resp.status_code
@@ -93,10 +102,10 @@ def fetch(min_gap: float = 1.0) -> None:
         except Exception as e:                           # noqa: BLE001 - log and move on
             code = f"error:{type(e).__name__}"
         with open(log_p, "a") as f:
-            f.write(f"{date.today()}\t{r.slug}\t{code}\n")
+            f.write(f"{date.today()}\t{slug_}\t{code}\n")
         if i % 100 == 0:
-            print(f"{i}/{len(t)} {r.slug} {code} (new {n_new})", flush=True)
-    print(f"done: {len(t)} targets, {n_new} new pages", flush=True)
+            print(f"{i}/{len(slugs)} {slug_} {code} (new {n_new})", flush=True)
+    print(f"done: {len(slugs)} targets, {n_new} new pages", flush=True)
 
 
 # ---------------------------------------------------------------- parse

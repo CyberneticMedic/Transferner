@@ -422,6 +422,17 @@ def eval_only(root, args, init, genera, family_of, splits, size, gi, dev) -> Non
         pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
     fb_paths = set(bx[bx.fallback].path)
     negm = pd.read_parquet(root / "manifests/negatives.parquet")
+    if args.boxes_only:
+        # test box AP on every photo, and on photos with real boxes only: the D-044 recipe drops the box loss on
+        # vascular full-frame fallback boxes (19% of boxed photos), which the all-photo AP still scores as targets
+        amp = torch.autocast("cuda", dtype=torch.float16)
+        real = [it for it in splits["test"] if it[0] not in fb_paths]
+        for tag, items, app in (("all", splits["test"], False), ("real_boxes", real, False), ("real_boxes app_rules", real, True)):
+            det = evaluate(model, net, DataLoader(BoxSet(root, items, size, False), batch_size=64, num_workers=w, collate_fn=collate),
+                           anchors0, size, family_of, dev, mean, std, False, amp, app)
+            print(f"boxes-only {args.eval_only} @ {size} test {tag} n {len(items):,} agnostic_ap50 {det['agnostic_ap50']:.4f} "
+                  f"agnostic_map {det['agnostic_map']:.4f} ap50 {det['ap50']:.4f}", flush=True)
+        return
     for split in ("val", "test"):
         m = image_eval(model, net, splits[split], size, family_of, dev, mean, std, w)
         r = image_eval(model, net, [x for x in splits[split] if im.get(x[0]) == "gbif_regional"], size, family_of, dev, mean, std, w)
@@ -499,6 +510,7 @@ def main() -> None:
     ap.add_argument("--neg-weight", type=float, default=0.25, help="selection: - this x plant-free frames with a box")
     ap.add_argument("--encounter-exempt-traits", action="store_true", help="genera with cited trait rows keep at least their balanced share")
     ap.add_argument("--eval-only", default="", help="checkpoint: val + test metrics at --size, no training, no table row")
+    ap.add_argument("--boxes-only", action="store_true", help="with --eval-only: test box AP on all photos and on real-box photos")
     ap.add_argument("--emb", default="artifacts/img_emb", help="BioCLIP embedding set for the unboxed stream and teacher (D-045: img_emb_v2)")
     ap.add_argument("--probe", default="artifacts/probe.pt", help="teacher probe")
     ap.add_argument("--temperature", default="artifacts/temperature.txt")

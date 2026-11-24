@@ -481,7 +481,31 @@ def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int):
 
 
 # ------------------------------------------------------------------------------------------ eval
-def evaluate(model, net, loader, anchors0, size, family_of, dev, mean, std, channels_last, amp) -> dict:
+def app_boxes(box: np.ndarray, score: np.ndarray, size: int, contain: float = 0.8, max_boxes: int = 4):
+    """core/Live.kt BoxRules.organize without its score thresholds (AP sweeps scores): best first, a box at least
+    `contain` inside a kept box is dropped unless that kept box fills the frame (>= 80% of it), at most max_boxes."""
+    keep = []
+    area = lambda b: max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    for i in np.argsort(-score):
+        if len(keep) >= max_boxes:
+            break
+        b = box[i]
+        ok = True
+        for k in keep:
+            o = box[k]
+            if area(o) >= 0.8 * size * size:
+                continue
+            inter = max(0.0, min(b[2], o[2]) - max(b[0], o[0])) * max(0.0, min(b[3], o[3]) - max(b[1], o[1]))
+            if area(b) > 0 and inter / area(b) >= contain:
+                ok = False
+                break
+        if ok:
+            keep.append(i)
+    keep = np.array(keep, int)
+    return box[keep], score[keep]
+
+
+def evaluate(model, net, loader, anchors0, size, family_of, dev, mean, std, channels_last, amp, app: bool = False) -> dict:
     """Score the (compiled) PyTorch model; see evaluate_with."""
     model.eval()
 
@@ -491,13 +515,13 @@ def evaluate(model, net, loader, anchors0, size, family_of, dev, mean, std, chan
         with amp:
             return forward_raw(net, x)
     try:
-        return evaluate_with(run, model.box_coder, loader, anchors0, size, family_of, dev, mean, std)
+        return evaluate_with(run, model.box_coder, loader, anchors0, size, family_of, dev, mean, std, app)
     finally:
         model.train()
 
 
 @torch.no_grad()
-def evaluate_with(run, box_coder, loader, anchors0, size, family_of, dev, mean, std) -> dict:
+def evaluate_with(run, box_coder, loader, anchors0, size, family_of, dev, mean, std, app: bool = False) -> dict:
     """run(x) -> {'bbox_regression', 'cls_logits'} for normalised (B, 3, S, S) input on dev: the PyTorch
     model, a PT2E-quantized graph or a LiteRT interpreter, all scored by the same postprocessing and metrics."""
     dets = {k: [] for k in ("img", "cls", "score", "box")}
@@ -526,8 +550,9 @@ def evaluate_with(run, box_coder, loader, anchors0, size, family_of, dev, mean, 
             k = n + i
             dets["img"].append(np.full(len(r["score"]), k)); dets["cls"].append(r["genus"])
             dets["score"].append(r["score"]); dets["box"].append(r["box"])
-            adets["img"].append(np.full(len(r["ascore"]), k)); adets["score"].append(r["ascore"])
-            adets["box"].append(r["abox"])
+            ab, asc = app_boxes(r["abox"], r["ascore"], size) if app else (r["abox"], r["ascore"])
+            adets["img"].append(np.full(len(asc), k)); adets["score"].append(asc)
+            adets["box"].append(ab)
             gts["img"].append(np.full(len(labels[i]), k)); gts["cls"].append(labels[i].numpy() - 1)
             gts["box"].append(boxes[i].numpy())
         n += len(res)

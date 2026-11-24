@@ -82,8 +82,11 @@ def main() -> None:
     # places go to the next rows of the same species
     ex_p = root / "manifests/exclude_uuids.parquet"
     if ex_p.exists():
-        ex = set(pd.read_parquet(ex_p, columns=["uuid"]).uuid)
-        img.loc[img.uuid.isin(ex) & img.split.isin(["train", "val", "train_ext", "val_ext"]), "split"] = "excluded"
+        # by (uuid, class): a homonym row is wrong for the class it was matched to, not for every class. 720 such
+        # photos are the accepted name of a D-045 perennial (the plant the homonym pointed at) and stay there.
+        ex = pd.read_parquet(ex_p, columns=["uuid", "class_idx"])
+        key = pd.MultiIndex.from_frame(img[["uuid", "class_idx"]]).isin(pd.MultiIndex.from_frame(ex))
+        img.loc[key & img.split.isin(["train", "val", "train_ext", "val_ext"]), "split"] = "excluded"
 
     # ---- per-species cap on train+val (regional extras first, then ToL by pick_rank)
     cap = sp.set_index("class_idx").pipe(

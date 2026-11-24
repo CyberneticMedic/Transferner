@@ -295,3 +295,19 @@ Newest at the bottom. Format: ID · date · decision · why.
     - A banner on the live screen links to Settings when anything is new.
   - **Signing:** every APK is signed with one key, a copy of the debug keystore kept at `/models/ml/android/signing/transferner-sideload.keystore` (SHA-256 35a2f1fd…380e), set explicitly in `app/app/build.gradle.kts`. If that key were lost, updates would require an uninstall, which deletes the app's data.
   - 0.5 itself must be installed once by hand from the web page; later versions update in-app.
+- **D-043 · 2026-11-24 · Live input 448 px (`mnv4_live448`), staged as bundle 0.5; selection fix; D-041's INT8 loss corrected.**
+  - **Resolution.** The `mnv4_live` weights read larger frames with no retraining. Test (12,358 regional photos), whole-frame genus top-1 and mosaic box AP50:
+
+    | Model | Input | Genus top-1 | Mosaic AP50 |
+    |---|---|---|---|
+    | `mnv4_live` | 320 | 72.8% | 0.643 |
+    | `mnv4_live` | 384 | 75.7% | 0.634 |
+    | `mnv4_live` | 448 | 76.9% | 0.535 |
+    | `mnv4_live448`, 1 pass at 448 (step 12,000) | 448 | 77.0% | 0.643 |
+
+    The pass at 448 (`--size 448 --epochs 1`, from `mnv4_live`) repaired the boxes (test class-agnostic AP50 0.391 → 0.692) but did not raise the label (val 76.5% → 76.4%).
+  - **Selection bug.** `train_live_head.py` selected on the label alone, so step 0 (the 320 weights at 448, broken boxes) won by 0.05 pt and the final step was never saved. Now: the selection key adds `--box-weight` (0.25) × val mosaic AP50, the last step is always saved as `final.pt`, and `--eval-only CKPT --size N` scores a checkpoint without training. `mnv4_live448/step12000.pt` is `last.pt` with the full args. The mosaic metric is mostly seam detection (audit below), so this guards against broken boxes but does not rank good ones.
+  - **INT8 at 448** (`detector_app_int8`, 14.0 MB, full regional test, not the 512-photo check): 77.0% float → 75.7% INT8 (−1.3 pt); class-agnostic AP50 0.692 → 0.682. Keeping the whole-frame head in float (`_fh`) gives 75.8% for 22.5 MB, so not worth it. Against the shipped 320 INT8 (71.8% on the same photos) that is about +4 pt on the phone. Moto latency not measured: about 2× the 320 graph's compute, an estimated 100–120 ms per frame against the 200 ms budget.
+  - **D-041 correction.** The −3.7 pt INT8 loss for `mnv4_live` came from the 512-photo check set. Paired on the full regional test it is −1.08 ± 0.38 pt (72.84% → 71.77%; 361 photos right only in float, 228 only in INT8), found by the read-only audit (`$TRANSFERNER_DATA/ops/audit-20261124.json`, finding `live_int8_precision-loss-overstated`). D-041's observer and float-head diagnoses were read from the same 512 photos. Export checks now use `--split test --images 20000`.
+  - **INT8 logit ties.** The INT8 `image_logits` scale (0.27) makes some genera tie exactly; the 0.5 golden photo has Polemonium and Mertensia both at 0.0949. `GoldenTest` now accepts a different order only for exact ties. The audit's fix (shift and clamp the logits before the int8 output) is for the next export.
+  - **Bundle 0.5 staged, not published:** `mnv4_live448` INT8 plus the same `focus.json` (model-independent: same genera). The app reads the input size from the sidecar, so no app change is needed; all unit tests pass against the 0.5 and 0.4 goldens. `latest.json` stays at 0.4 until the user asks.

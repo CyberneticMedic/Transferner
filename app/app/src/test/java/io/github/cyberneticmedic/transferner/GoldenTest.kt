@@ -89,8 +89,10 @@ class GoldenTest {
         val (top, _, _) = Detections.genera(probs, det, 5)
         val ref = g["detector"]!!.jsonObject["genus_top5"]!!.jsonArray
         for ((i, r) in ref.withIndex()) {
-            assertEquals(r.jsonArray[0].jsonPrimitive.content, top[i].genus)
+            val name = r.jsonArray[0].jsonPrimitive.content
             assertEquals(r.jsonArray[1].jsonPrimitive.float, top[i].p, 1e-4f)
+            // INT8 logits are quantised, so two genera can tie exactly; torch.topk and Kotlin order ties differently
+            if (top[i].genus != name) assertEquals("${top[i].genus} vs $name is not a tie", probs[det.genera.indexOf(name)], top[i].p, 1e-7f)
         }
         val reg = Detections.dequant(bytes("detector_boxes.i8"), det.outputs.boxes)
         val boxes = Detections.boxes(floats("detector_objectness.f32"), Detections.decode(reg, det), det, 5)

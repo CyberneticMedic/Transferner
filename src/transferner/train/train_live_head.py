@@ -12,9 +12,12 @@ Half the boxed samples are 2x2 mosaics (--mosaic) so the detector learns several
 a mosaic val metric tracks it. The whole-frame branch becomes MobileNetV4's own classifier head (pool, 960 -> 1280, BN, ReLU, classifier),
 initialised from the ImageNet checkpoint's head (--image-head). Both streams add low-light frames
 (train_detector.low_light) to the walking-video augmentation. Selection: val whole-frame genus top-1 (all
-of val; the regional slice is reported), test once at the end. Writes artifacts/detector/<name>/ and a row
-to results/tables/detector_live.csv.
-  python -m transferner.train.train_live_head --name mnv4_live"""
+of val; the regional slice is reported) or the encounter-weighted top-1 (--select), plus --box-weight x the
+mosaic box AP50, so a step whose boxes are broken cannot win on the label alone (mnv4_live448 picked step 0,
+the 320 px weights at 448: label 0.7648 vs 0.7643 after training, mosaic AP50 0.579 vs 0.675). Test once at
+the end. Writes artifacts/detector/<name>/ (best.pt, final.pt) and a row to results/tables/detector_live.csv.
+  python -m transferner.train.train_live_head --name mnv4_live
+  python -m transferner.train.train_live_head --eval-only artifacts/detector/mnv4_live/best.pt --size 384"""
 from __future__ import annotations
 
 import argparse
@@ -182,6 +185,31 @@ def encounter_eval(model, net, items, size, enc, dev, mean, std, workers) -> dic
             "top50_recall": float((hit[m50 & m].sum()) / max(cnt[m50 & m].sum(), 1)), "pool_n": int(cnt.sum())}
 
 
+def eval_only(root, args, init, genera, family_of, splits, size, gi, dev) -> None:
+    """Val and test metrics of a trained live checkpoint at --size (resolution sweeps without retraining)."""
+    model = build(len(genera), load("detector")["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True,
+                  image_head=args.image_head)
+    missing, _ = model.load_state_dict(init["model"], strict=False)
+    assert not missing, f"checkpoint lacks {sorted(missing)[:4]}"
+    model.to(dev)
+    use_shift_add_depthwise(model)
+    python_headers_for_triton()
+    net = torch.compile(Net(model), dynamic=False)
+    mean = torch.tensor(model.backbone.mean, device=dev).view(1, 3, 1, 1)
+    std = torch.tensor(model.backbone.std, device=dev).view(1, 3, 1, 1)
+    anchors0 = anchors_for(model, size, dev)
+    enc = encounter_share(root, genera)
+    im = pd.read_parquet(root / "manifests/images.parquet", columns=["path", "source"]).set_index("path").source
+    w = args.workers_img
+    for split in ("val", "test"):
+        m = image_eval(model, net, splits[split], size, family_of, dev, mean, std, w)
+        r = image_eval(model, net, [x for x in splits[split] if im.get(x[0]) == "gbif_regional"], size, family_of, dev, mean, std, w)
+        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"},
+               **mosaic_eval(model, net, splits[split], size, anchors0, dev, mean, std, w),
+               **encounter_eval(model, net, regional_pool(root, split, gi), size, enc, dev, mean, std, w)}
+        print(f"eval-only {args.eval_only} @ {size} {split} " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
+
+
 def image_eval(model, net, items, size, family_of, dev, mean, std, workers) -> dict:
     """Whole-frame genus top-1/top-5 and family top-1 on a list of (path, boxes, labels) items."""
     fam = torch.as_tensor(family_of, device=dev)
@@ -227,6 +255,8 @@ def main() -> None:
     ap.add_argument("--encounter-power", type=float, default=1.0)
     ap.add_argument("--select", choices=["val", "encounter"], default="val",
                     help="checkpoint selection: val whole-frame genus top-1, or encounter-weighted regional val top-1")
+    ap.add_argument("--box-weight", type=float, default=0.25, help="selection: + this x val mosaic agnostic AP50")
+    ap.add_argument("--eval-only", default="", help="checkpoint: val + test metrics at --size, no training, no table row")
     ap.add_argument("--eval-every", type=int, default=4000, help="steps")
     ap.add_argument("--workers-img", type=int, default=14)
     ap.add_argument("--workers-box", type=int, default=6)
@@ -238,12 +268,18 @@ def main() -> None:
     root, dev = data_root(), "cuda"
     size = args.size or cfg["model"]["input"]
     args.size = size
+    if args.eval_only:
+        args.init = args.eval_only
     init = torch.load(root / args.init, map_location="cpu")
     genera, family_of, families, splits = load_items(root, args.boxes, init["args"].get("fallback", "keep"), 0, args.seed)
     out_dir = root / "artifacts/detector" / args.name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "labels.json").write_text(json.dumps({"genera": genera, "families": families, "family_of": family_of.tolist()}))
+    if not args.eval_only:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    if not args.eval_only:
+        (out_dir / "labels.json").write_text(json.dumps({"genera": genera, "families": families, "family_of": family_of.tolist()}))
     gi = {g: i for i, g in enumerate(genera)}
+    if args.eval_only:
+        return eval_only(root, args, init, genera, family_of, splits, size, gi, dev)
 
     # unboxed stream: every non-specimen training photo whose genus the detector knows (D-020: no specimens)
     t = teacher(root, out_dir / "teacher_train.npz", genera, args)
@@ -329,6 +365,8 @@ def main() -> None:
     best, best_step, step, t0, t_start = -1.0, -1, 0, time.time(), time.time()
     it_box = iter(dl_box)
 
+    last_row = [None]
+
     def evaluate_now():
         nonlocal best, best_step
         m = image_eval(model, net, splits["val"], size, family_of, dev, mean, std, args.workers_img)
@@ -338,11 +376,16 @@ def main() -> None:
         row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo, **en}
         log.log(step, "val", **row)
         print(f"step {step} val " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
-        key = en["encounter_top1"] if args.select == "encounter" else m["image_genus_top1"]
+        key = (en["encounter_top1"] if args.select == "encounter" else m["image_genus_top1"]) + args.box_weight * mo["mosaic_agnostic_ap50"]
         if key > best:
             best, best_step = key, step
-            torch.save({"model": model.state_dict(), "epoch": step, "args": {**init["args"], **vars(args), "head": "shared",
-                        "aux_image": 1.0}, "val": row}, out_dir / "best.pt")
+            torch.save(ckpt(row), out_dir / "best.pt")
+        last_row[0] = row
+        return row
+
+    def ckpt(row):
+        return {"model": model.state_dict(), "epoch": step, "args": {**init["args"], **vars(args), "head": "shared",
+                "aux_image": 1.0}, "val": row}
 
     evaluate_now()                                # a new head: a floor; a continued one: the baseline
     done = False
@@ -380,15 +423,14 @@ def main() -> None:
                       f"{step * (args.batch_box + args.batch_img) / (time.time() - t0):.0f} img/s", flush=True)
                 log.log(step, "train", loss_box=l_box.item(), loss_cls=l_cls.item(), loss_hard=l_hard.item(), loss_kd=l_kd.item())
             if step % args.eval_every == 0:
-                evaluate_now()
-                torch.save({"model": model.state_dict(), "epoch": step, "args": vars(args)}, out_dir / "last.pt")
+                torch.save(ckpt(evaluate_now()), out_dir / "last.pt")
             if step >= total:
                 done = True
                 break
         if done:
             break
-    if step % args.eval_every:
-        evaluate_now()
+    row = evaluate_now() if step % args.eval_every else last_row[0]
+    torch.save(ckpt(row), out_dir / "final.pt")          # the last step, whether or not it was selected
     if args.max_steps:
         print(f"smoke run: best selection metric ({args.select}) {best:.4f} at step {best_step}; no test", flush=True)
         log.close()

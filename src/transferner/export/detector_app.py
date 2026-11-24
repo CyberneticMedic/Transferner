@@ -38,9 +38,22 @@ OUTPUTS = ("image_logits", "objectness", "boxes")
 
 
 class AppExport(nn.Module):
-    def __init__(self, ssd):
+    def __init__(self, ssd, float_image_head: bool = False):
         super().__init__()
         self.backbone, self.head = ssd.backbone, ssd.head
+        self.float_image_head = False
+        ic = getattr(self.head, "image_cls", None)
+        if float_image_head and ic is not None:
+            # The dedicated whole-frame head (pool -> 1x1 conv + BN -> ReLU -> 1x1 conv) rewritten as mean + matmul,
+            # which the LiteRT PT2E quantizer does not annotate (its static ops are conv/linear/add/mul/cat/pools):
+            # the head runs in float on the dequantized stride-32 features (~3M MACs per frame).
+            conv1, bn, conv2 = ic[1], ic[2], ic[5]
+            k = bn.weight / torch.sqrt(bn.running_var + bn.eps)
+            self.register_buffer("w1", (conv1.weight.flatten(1) * k[:, None]).detach().clone())
+            self.register_buffer("b1", (bn.bias - bn.running_mean * k).detach().clone())
+            self.register_buffer("w2", conv2.weight.flatten(1).detach().clone())
+            self.register_buffer("b2", conv2.bias.detach().clone())
+            self.float_image_head = True
         assert getattr(self.head, "image_embed", None) is not None or getattr(self.head, "image_cls", None) is not None, \
             "needs a shared head with a whole-frame branch (--aux-image or train_live_head)"
 
@@ -53,7 +66,11 @@ class AppExport(nn.Module):
             g = h.genus(em(f))                                           # (B, G, H, W) genus logits per location
             o = torch.sigmoid(torch.logsumexp(g, dim=1, keepdim=True) - b)
             obj.append(o.permute(0, 2, 3, 1).reshape(x.shape[0], -1))   # anchor order = SSD's (location, shape)
-        image_logits = h.image_logits(feats)
+        if self.float_image_head:
+            x = feats[1].mean(dim=(2, 3))
+            image_logits = torch.matmul(torch.relu(torch.matmul(x, self.w1.t()) + self.b1), self.w2.t()) + self.b2
+        else:
+            image_logits = h.image_logits(feats)
         return image_logits, torch.cat(obj, 1), h.regression_head(feats)
 
 
@@ -96,6 +113,9 @@ def main() -> None:
     ap.add_argument("--boxes", default="manifests/boxes.parquet")
     ap.add_argument("--recipe", choices=["fp32", "int8"], default="int8")
     ap.add_argument("--act-observer", choices=["histogram", "minmax"], default="histogram")
+    ap.add_argument("--float-image-head", action="store_true",
+                    help="keep the whole-frame head (head.image_cls: pool -> 1280 -> genera, ~3M MACs) in float: its INT8 "
+                         "logits (scale ~0.27) cost mnv4_live 3.7 pt whole-frame genus top-1 on 512 val photos")
     ap.add_argument("--images", type=int, default=512)
     ap.add_argument("--split", default="val")
     ap.add_argument("--calib", type=int, default=256)
@@ -130,7 +150,7 @@ def main() -> None:
     anchors0 = anchors_for(model, size, "cpu")
     run_score = lambda run: score(run, dl, model.box_coder, anchors0, size, family_of, mean, std)
 
-    exp = AppExport(model).eval()
+    exp = AppExport(model, args.float_image_head).eval()
     with torch.no_grad():                      # the app graph must equal the training graph's postprocessing
         x = cx[:4]
         il, ob, bx = exp(x)
@@ -143,7 +163,8 @@ def main() -> None:
         fl = run_score(lambda x: exp(x))
     print("float:", fl, f"({time.time() - t0:.0f} s)", flush=True)
 
-    tag = args.recipe + ("_minmax" if args.recipe == "int8" and args.act_observer == "minmax" else "")
+    tag = args.recipe + ("_minmax" if args.recipe == "int8" and args.act_observer == "minmax" else "") + \
+        ("_fh" if args.float_image_head and args.recipe == "int8" else "")
     row = {"recipe": f"detector_{args.name}_app_{tag}", "torch": torch.__version__, "images": args.images,
            "split": args.split, "threads": args.threads, "epoch": ck["epoch"],
            **{f"float_{k}": round(v, 4) for k, v in fl.items() if k != "n_images"}}
@@ -157,7 +178,7 @@ def main() -> None:
             for i in range(len(cx)):
                 m(cx[i:i + 1])
         m = convert_pt2e(m, fold_quantize=False)
-        row.update(calib=args.calib, act_observer=args.act_observer)
+        row.update(calib=args.calib, act_observer=args.act_observer, float_image_head=args.float_image_head)
     else:
         m = exp
 

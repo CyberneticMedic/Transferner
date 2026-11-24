@@ -265,3 +265,23 @@ Newest at the bottom. Format: ID · date · decision · why.
     - Per form on test (right chip): vine 52.6% → 66.0%, fern 60.7% → 69.5%, shrub 53.4% → 59.8%, tree 47.6% → 52.6%, grass-like 41.5% → 44.9%, moss 44.4% → 46.4%, herb 60.5% → 62.0% (herb covers 726 genera, too broad to help).
     - **Safety:** live warnings are computed from the unfocused distribution (app 0.4.3), so a wrong chip never silences a toxic genus.
     - **Shipped** in bundle 0.3 (`focus.json`, 9.9 KB). Bundle updates move unchanged files from the installed version (tested 0.2 → 0.3: only the manifest, `species.json` and `focus.json` were fetched).
+- **D-041 · 2026-11-24 · Live retrain `mnv4_live` result (D-036/D-040 recipe); INT8 loses 3.7 pt; staged as bundle 0.4.**
+  - **Run:** 3 passes over 1.37M unboxed photos plus the boxed stream with 50% mosaics, from `mnv4_shared`; 3.3 h. Val whole-frame genus top-1 was still rising slowly at the last step (72.6 → 72.7% over the final 2,849 steps), and the last step was selected. Test, run once on 12,358 regional photos, against `mnv4_shared`:
+
+    | Metric | `mnv4_shared` | `mnv4_live` |
+    |---|---|---|
+    | Whole-frame genus top-1 | 56.2% | 72.8% |
+    | Genus top-5 | 76.6% | 87.9% |
+    | Family top-1 | 66.3% | 80.0% |
+    | Mosaic class-agnostic AP50 | 0.31 | 0.64 |
+    | Class-agnostic AP50 | 0.685 | 0.692 |
+    | Box genus AP50 | 0.353 | 0.419 |
+    | Best-box genus top-1 | 49.1% | 56.2% |
+
+  - **Live warnings** (toxic genus ≥ 2%, regional): misses 3.0% / 1.1% (val / test) instead of 5.5% / 5.6%; false alarms 30% / 29% instead of 37% / 35% (`results/tables/warning_flags_mnv4_live.csv`).
+  - **Focus chip** (eps 0.01, same rule): right chip +2.7 / +2.8 pt, wrong chip −7.7 / −7.5 pt.
+  - **INT8 PTQ** (512 val photos): whole-frame genus top-1 72.1% → 68.4% (−3.7 pt), family −1.8 pt, class-agnostic AP50 −0.5 pt. `mnv4_shared` lost nothing.
+    - **Not the cause:** the output rounding (simulated INT8 logits: 72.7% → 72.7%), the histogram observer (min/max: 68.9%), or the new head (the head rewritten as float `mean` + `matmul`, which the quantizer does not annotate: 68.75%, via `export/detector_app.py --float-image-head`).
+    - **The cause:** the retrained backbone's INT8 features.
+    - **Fixes:** QAT (D-011), or run the float graph on the Moto's CPU through XNNPACK in FP16. Its latency is not measured: an estimated 1.5–2.5× the INT8 model, inside the user's 200 ms budget.
+  - **Staged, not published:** bundle 0.4 = `mnv4_live` INT8 (`detector_app_int8`, 14.0 MB) plus the same `focus.json`; a phone on 0.3 would fetch about 15 MB. `latest.json` stays at 0.3 until the user asks (they said the model can be updated later). `export/bundle.py --no-publish` builds without publishing.

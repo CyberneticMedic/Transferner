@@ -237,6 +237,7 @@ def main() -> None:
     ap.add_argument("--temperature", default="artifacts/temperature.txt")
     ap.add_argument("--thumb-px", type=int, default=256)
     ap.add_argument("--goldens", default="", help="write the app's unit-test goldens to this directory")
+    ap.add_argument("--no-publish", action="store_true", help="build the version directory but leave latest.json (staging)")
     ap.add_argument("--golden-uuid", default="gbif-6178854992-1")
     args = ap.parse_args()
     root = data_root()
@@ -299,7 +300,8 @@ def main() -> None:
                 "files": [{"path": str(p.relative_to(out)), "bytes": p.stat().st_size, "sha256": sha256(p),
                            **({"group": groups[p.name]} if p.name in groups else {})} for p in files]}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=0))
-    (base / "latest.json").write_text(json.dumps({"version": args.version, "manifest": f"{args.version}/manifest.json"}))
+    if not args.no_publish:
+        (base / "latest.json").write_text(json.dumps({"version": args.version, "manifest": f"{args.version}/manifest.json"}))
     total = sum(f["bytes"] for f in manifest["files"])
     n_thumb = sum(1 for e in cat if e["thumb"])
     n_tr = sum(1 for e in cat if e["traits"])

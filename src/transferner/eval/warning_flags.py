@@ -84,7 +84,7 @@ def main() -> None:
     df = pd.DataFrame(rows)
     pd.set_option("display.width", 200)
     print(df.to_string(index=False))
-    out = repo / "results/tables/warning_flags.csv"
+    out = repo / ("results/tables/warning_flags.csv" if args.live == "mnv4_shared" else f"results/tables/warning_flags_{args.live}.csv")
     df.to_csv(out, index=False)
     print(f"relatives (no rows, genus has a cited toxic species): {rel.sum()} species; toxic genera {len(tox_genera)} "
           f"({g_tox.sum()} of the detector's {len(genera)}), serious {g_ser.sum()}; wrote {out}")

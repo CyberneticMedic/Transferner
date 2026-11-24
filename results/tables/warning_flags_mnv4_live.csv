@@ -1,0 +1,33 @@
+kind,split,rule,n,miss_toxic,miss_serious,false_alarm
+capture,val,top5,20352,0.0044,0.0056,0.2716
+capture,val,top5+rel,20352,0.0033,0.0043,0.3409
+capture,val,p>=0.02,20352,0.0037,0.0043,0.2754
+capture,val,p>=0.02+rel,20352,0.0026,0.003,0.3449
+capture,val,p>=0.01,20352,0.0033,0.0035,0.2806
+capture,val,p>=0.01+rel,20352,0.0024,0.0026,0.3497
+capture,val,p>=0.005,20352,0.0026,0.003,0.288
+capture,val,p>=0.005+rel,20352,0.0017,0.0022,0.3574
+capture,test,top5,176590,0.007,0.0073,0.2263
+capture,test,top5+rel,176590,0.0053,0.0053,0.3075
+capture,test,p>=0.02,176590,0.0051,0.0052,0.2311
+capture,test,p>=0.02+rel,176590,0.0039,0.0038,0.3128
+capture,test,p>=0.01,176590,0.0037,0.0039,0.2382
+capture,test,p>=0.01+rel,176590,0.0028,0.0026,0.3199
+capture,test,p>=0.005,176590,0.0026,0.0026,0.2478
+capture,test,p>=0.005+rel,176590,0.0018,0.0016,0.3294
+live,val,any toxic genus p>=0.2,1304,0.166,0.1678,0.0889
+live,val,serious genus p>=0.2,1304,0.4085,0.1745,0.058
+live,val,any toxic genus p>=0.1,1304,0.1234,0.1208,0.1366
+live,val,serious genus p>=0.1,1304,0.3617,0.1275,0.0935
+live,val,any toxic genus p>=0.05,1304,0.0596,0.0537,0.1993
+live,val,serious genus p>=0.05,1304,0.2894,0.0738,0.1431
+live,val,any toxic genus p>=0.02,1304,0.0298,0.0336,0.3012
+live,val,serious genus p>=0.02,1304,0.2426,0.047,0.2311
+live,test,any toxic genus p>=0.2,12358,0.1417,0.1257,0.0836
+live,test,serious genus p>=0.2,12358,0.4175,0.1401,0.0542
+live,test,any toxic genus p>=0.1,12358,0.0849,0.072,0.1373
+live,test,serious genus p>=0.1,12358,0.3696,0.0931,0.0932
+live,test,any toxic genus p>=0.05,12358,0.0389,0.0298,0.2027
+live,test,serious genus p>=0.05,12358,0.3176,0.0489,0.1434
+live,test,any toxic genus p>=0.02,12358,0.0114,0.0096,0.2925
+live,test,serious genus p>=0.02,12358,0.2644,0.0192,0.2278

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -39,18 +40,19 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="mnv4_shared")
     ap.add_argument("--boxes", default="manifests/boxes.parquet")
+    ap.add_argument("--ckpt", default="best.pt", help="cache: image_logits.npz for best.pt, else image_logits_<stem>.npz")
     args = ap.parse_args()
     root, cfg = data_root(), load("detector")
     d = root / "artifacts/detector" / args.name
     labels = json.loads((d / "labels.json").read_text())
-    ck = torch.load(d / "best.pt", map_location="cpu")
+    ck = torch.load(d / args.ckpt, map_location="cpu")
     size = ck["args"].get("size") or cfg["model"]["input"]
     genera, family_of, families, splits = load_items(root, args.boxes, ck["args"].get("fallback", "keep"), 0, 0)
     assert genera == labels["genera"]
     G = len(genera)
     im = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path", "source", "event_date"]).set_index("path")
 
-    cache = d / "image_logits.npz"
+    cache = d / ("image_logits.npz" if args.ckpt == "best.pt" else f"image_logits_{Path(args.ckpt).stem}.npz")
     if cache.exists():
         z = np.load(cache, allow_pickle=True)
         data = {s: (z[f"{s}_logits"], z[f"{s}_y"], z[f"{s}_path"]) for s in ("val", "test")}

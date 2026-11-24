@@ -27,6 +27,7 @@ from ..utils.config import data_root
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", default="mnv4_shared", help="detector whose cached whole-frame logits to use")
+    ap.add_argument("--logits", default="image_logits.npz", help="cache file in the detector's directory (eval/detector_prior --ckpt)")
     args = ap.parse_args()
     torch.set_num_threads(8)
     root = data_root()
@@ -69,7 +70,7 @@ def main() -> None:
     genera = json.loads((d / "labels.json").read_text())["genera"]
     g_tox = np.array([g in tox_genera for g in genera])
     g_ser = np.array([g in set(sp.genus[serious]) for g in genera])
-    z = np.load(d / "image_logits.npz", allow_pickle=True)
+    z = np.load(d / args.logits, allow_pickle=True)
     im = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path", "source", "class_idx"]).set_index("path")
     for split in ("val", "test"):
         lg, paths = z[f"{split}_logits"].astype(np.float64), z[f"{split}_path"]

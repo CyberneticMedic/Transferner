@@ -361,15 +361,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun genusWarn(files: BundleFiles): IntArray {
         val idx = warnIndex ?: io.github.cyberneticmedic.transferner.core.WarningIndex(files.catalog).also { warnIndex = it }
         return IntArray(files.detector.genera.size) { g ->
-            val n = files.detector.genera[g]
-            if (idx.genusSerious(n)) 2 else if (idx.genusToxic(n)) 1 else 0
+            idx.warnLevel(files.detector.genera[g], files.detector.families[files.detector.familyOf[g]])
         }
     }
 
     /** Forage tiers from the bundle and the user's overrides; rebuilt when the user edits them. */
     fun rebuildForage(files: BundleFiles? = (bundle.value as? BundleState.Ready)?.files) {
         val f = files ?: return
-        scorer = f.forage?.let { ForageScorer(it, f.detector.genera.size, prefs.forageTiers) }
+        scorer = f.forage?.let { ForageScorer(it, f.detector.genera.size, prefs.forageTiers, f.tuning.alertWeightFloor) }
         accumulator = AlertAccumulator(f.tuning)
         toxicHold = HoldDetector(f.tuning.toxicHaptic, f.tuning.toxicHoldS, f.tuning.alertTauS, 120f)
     }
@@ -703,11 +702,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 var top = ""
                 var confirmed = false
                 if (id != null) {
-                    for (s in files.catalog.species) if (s.genus == genus) gp += id.probs[s.i]
+                    // confirm on the genus' cited edible or conditional species (D-045), not the whole genus: a
+                    // Bradford pear must not buzz as "pear"
+                    val ru = rules
+                    val edible = { i: Int -> ru?.summary(i)?.let { it.edibleParts.isNotEmpty() || it.conditionalParts.isNotEmpty() } ?: true }
+                    for (s in files.catalog.species) if (s.genus == genus && edible(s.i)) gp += id.probs[s.i]
                     val i1 = io.github.cyberneticmedic.transferner.core.Detections.topK(id.probs, 1)[0]
                     val s1 = files.catalog.species[i1]
                     top = "${s1.name} ${pct(id.probs[i1])}"
-                    confirmed = gp >= files.tuning.verifyGenusP || s1.genus == genus
+                    confirmed = gp >= files.tuning.verifyGenusP || (s1.genus == genus && edible(i1))
                 }
                 val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date())
                 val a = WalkAlert(now, clock, genus, info?.label?.ifBlank { genus } ?: genus, score, confirmed, top, gp, window, frameName, info?.note.orEmpty())

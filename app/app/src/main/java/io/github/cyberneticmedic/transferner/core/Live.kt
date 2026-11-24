@@ -33,6 +33,10 @@ data class Tuning(
     @SerialName("alert_enter") val alertEnter: Float = 0.5f,
     @SerialName("alert_hold_s") val alertHoldS: Float = 0.75f,
     @SerialName("alert_exit") val alertExit: Float = 0.35f,
+    /** Alert-tier genera score at least this weight (D-045): 9 of the 47 default alert genera had e_g < 0.5
+     *  (chestnut, prickly pear, hawthorn, pear...) and could never reach alert_enter. The BioCLIP check, now on
+     *  the genus' cited edible species, keeps their non-edible congeners (Bradford pear) from buzzing. */
+    @SerialName("alert_weight_floor") val alertWeightFloor: Float = 0.8f,
     /** Forage chip (no haptic) from this accumulated score. */
     @SerialName("chip_min") val chipMin: Float = 0.3f,
     @SerialName("refractory_s") val refractoryS: Float = 600f,
@@ -192,7 +196,7 @@ enum class Tier {
  * S = sum over target genera of p_g * e_g, where e_g is the share of the genus' regional sightings that are
  * listed edible species. Alert-tier genera can buzz; show-tier genera only raise a chip.
  */
-class ForageScorer(meta: ForageMeta, nGenera: Int, overrides: Map<String, Tier>) {
+class ForageScorer(meta: ForageMeta, nGenera: Int, overrides: Map<String, Tier>, alertFloor: Float = 0f) {
     val byIndex: Map<Int, ForageGenus> = meta.genera.associateBy { it.g }
     private val alertW = FloatArray(nGenera)
     private val showW = FloatArray(nGenera)
@@ -202,7 +206,7 @@ class ForageScorer(meta: ForageMeta, nGenera: Int, overrides: Map<String, Tier>)
             if (f.g !in 0 until nGenera) continue
             val tier = overrides[f.genus] ?: Tier.of(f.tier)
             when (tier) {
-                Tier.ALERT -> alertW[f.g] = f.weight
+                Tier.ALERT -> alertW[f.g] = max(f.weight, alertFloor)
                 Tier.SHOW -> showW[f.g] = f.weight
                 Tier.OFF -> {}
             }

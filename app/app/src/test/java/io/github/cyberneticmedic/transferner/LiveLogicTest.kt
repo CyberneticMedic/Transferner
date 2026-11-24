@@ -82,6 +82,13 @@ class LiveLogicTest {
         assertEquals(0.2f, off.alert, 1e-6f); assertEquals(2, off.alertGenus)
     }
 
+    @Test fun alertTierGeneraGetTheWeightFloor() {
+        val low = ForageMeta(listOf(ForageGenus(0, "Pyrus", "alert", 0.08f, "pear"), ForageGenus(1, "Plantago", "show", 0.2f, "plantain")))
+        val s = ForageScorer(low, 2, emptyMap(), alertFloor = 0.8f).score(floatArrayOf(0.9f, 0.1f))
+        assertEquals(0.72f, s.alert, 1e-6f)                                // 0.9 x max(0.08, 0.8): can reach 0.5
+        assertEquals(0.02f, s.show, 1e-6f)                                 // the floor is for the alert tier only
+    }
+
     @Test fun alertNeedsTheScoreHeldThenRespectsTheCheckOutcome() {
         val acc = AlertAccumulator(t.copy(alertTauS = 0f))              // no smoothing: test the hysteresis alone
         assertEquals(-1, acc.update(0.6f, 1, 0))                          // above enter, but not held yet

@@ -271,7 +271,7 @@ def tuning(det_dir: Path) -> dict:
     this detector; without it the gate is off. The rest are the read-only audit's values (app Tuning defaults)."""
     t = {"presence_boxes": 0.0, "presence_warn": 0.0, "secondary_offset": 0.15, "secondary_floor": 0.4, "containment": 0.8,
          "label_tau_s": 0.56, "warn_hold_frames": 4, "walk_fps": 4, "alert_tau_s": 1.0, "alert_enter": 0.5, "alert_hold_s": 0.75,
-         "alert_exit": 0.35, "chip_min": 0.3, "refractory_s": 600, "toxic_haptic": 0.3, "toxic_hold_s": 1.0, "verify_genus_p": 0.25,
+         "alert_exit": 0.35, "alert_weight_floor": 0.8, "chip_min": 0.3, "refractory_s": 600, "toxic_haptic": 0.3, "toxic_hold_s": 1.0, "verify_genus_p": 0.25,
          "text_min": 0.561, "banner_sum": 0.002, "banner_strong": 0.02, "conditional_min": 0.02, "species_min": 0.8, "genus_min": 0.8}
     gate = det_dir / "presence.json"
     if gate.exists():

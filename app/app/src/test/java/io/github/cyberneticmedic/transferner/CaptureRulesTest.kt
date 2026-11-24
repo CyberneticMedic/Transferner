@@ -80,6 +80,21 @@ class CaptureRulesTest {
         assertFalse(io.github.cyberneticmedic.transferner.core.Caution.union(listOf(none, none)).show)
     }
 
+    @Test fun carrotFamilySpeciesWithoutRowsAreHemlockRelatives() {
+        val c = Catalog(listOf(
+            Species(0, "Conium maculatum", "poison hemlock", "Conium", "Apiaceae", traits = listOf(toxic)),
+            Species(1, "Ptilimnium capillaceum", "mock bishop's weed", "Ptilimnium", "Apiaceae"),
+            Species(2, "Quercus alba", "white oak", "Quercus", "Fagaceae"),
+        ))
+        val idx = WarningIndex(c)
+        val t = io.github.cyberneticmedic.transferner.core.TraitSummary.of(c.species[1], idx)
+        assertTrue(t.relative && t.relativeSerious); assertEquals("family", t.relativeLevel)
+        assertTrue(t.detail.contains("same family as poison hemlock"))
+        assertEquals(2, idx.warnLevel("Ptilimnium", "Apiaceae"))
+        assertEquals(0, idx.warnLevel("Quercus", "Fagaceae"))
+        assertFalse(io.github.cyberneticmedic.transferner.core.TraitSummary.of(c.species[2], idx).relative)
+    }
+
     @Test fun fusionIsTheNormalisedGeometricMean() {
         val f = CaptureRules.fuse(p(0.8f, 0.2f), p(0.2f, 0.8f))
         assertEquals(0.5f, f[0], 1e-6f)

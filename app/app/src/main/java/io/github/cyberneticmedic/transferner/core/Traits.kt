@@ -16,6 +16,7 @@ data class TraitSummary(
     val conditionalParts: List<String>,
     val genusLevel: Boolean,                    // some rows come from a genus page, not this species
     val relatives: List<Pair<Species, TraitSummary>> = emptyList(),   // no rows of its own; cited toxic congeners
+    val relativeLevel: String = "genus",                                // "family" for the carrot-family rule (D-045)
     val congener: CongenerToxic? = null,        // has rows; toxic parts its cited congeners list and it does not
 ) {
     val toxic get() = ingestionToxic || contactToxic
@@ -68,7 +69,7 @@ data class TraitSummary(
 
     /** One line for the caution banner: what the source says, part by part. */
     val detail: String
-        get() = if (relative) "no trait data of its own; same genus as " + relatives.take(2).joinToString(" and ") { (sp, t) ->
+        get() = if (relative) "no trait data of its own; same $relativeLevel as " + relatives.take(2).joinToString(" and ") { (sp, t) ->
             "${sp.displayName} (${t.chip.lowercase()})" } + if (relatives.size > 2) " and ${relatives.size - 2} more" else ""
         else buildList {
             if (edibleAny) add(edibleDesc.replaceFirstChar { it.lowercase() } + if (conditionalParts.isNotEmpty()) " by the source" else "")
@@ -98,7 +99,10 @@ data class TraitSummary(
         fun of(s: Species, index: WarningIndex? = null): TraitSummary {
             val t = own(s)
             if (index == null) return t
-            if (!t.hasData) return t.copy(relatives = index.toxicIn(s.genus).filter { it.first.i != s.i })
+            if (!t.hasData) {
+                val rel = index.relativesOf(s)
+                return t.copy(relatives = rel, relativeLevel = if (rel.isEmpty() || rel.any { it.first.genus == s.genus }) "genus" else "family")
+            }
             return t.copy(congener = congenerToxic(s, t, index))
         }
 
@@ -168,13 +172,39 @@ data class CongenerToxic(val genus: String, val parts: List<String>, val severit
  * "relative" when its genus holds one.
  */
 class WarningIndex(catalog: Catalog) {
-    private val byGenus: Map<String, List<Pair<Species, TraitSummary>>> = catalog.species
-        .map { it to TraitSummary.of(it) }.filter { it.second.toxic }.groupBy { it.first.genus }
-        .mapValues { (_, v) -> v.sortedWith(compareByDescending<Pair<Species, TraitSummary>> { it.second.serious }.thenBy { it.first.name }) }
+    private val toxic = catalog.species.map { it to TraitSummary.of(it) }.filter { it.second.toxic }
+        .sortedWith(compareByDescending<Pair<Species, TraitSummary>> { it.second.serious }.thenBy { it.first.name })
+    private val byGenus: Map<String, List<Pair<Species, TraitSummary>>> = toxic.groupBy { it.first.genus }
+    private val byFamily: Map<String, List<Pair<Species, TraitSummary>>> =
+        toxic.filter { it.first.family in RISKY_FAMILIES }.groupBy { it.first.family }
 
     fun toxicIn(genus: String): List<Pair<Species, TraitSummary>> = byGenus[genus].orEmpty()
     fun genusToxic(genus: String) = byGenus.containsKey(genus)
+    /** "Serious" = a moderate, high or unstated severity, by any route (D-036: a low-severity contact irritant such
+     *  as fig or mulberry sap is mild, at the user's request; poison ivy is serious by its high severity). D-038's
+     *  text also counted every contact-toxic row; D-045 records that D-036's rule is the one in force. */
     fun genusSerious(genus: String) = byGenus[genus]?.any { it.second.serious } == true
+
+    /**
+     * Relatives of a species with no rows of its own: its genus' cited toxic species, or, in a family where the
+     * deadly look-alikes are (carrot family: poison and water hemlock), that family's cited toxic species
+     * (D-045). Ptilimnium had borrowed Ammi majus's rows through a homonym; without them it must not read as
+     * unflagged in the family where foraging mistakes kill.
+     */
+    fun relativesOf(s: Species): List<Pair<Species, TraitSummary>> {
+        val g = toxicIn(s.genus).filter { it.first.i != s.i }
+        return g.ifEmpty { if (s.family in RISKY_FAMILIES) byFamily[s.family].orEmpty().filter { it.first.i != s.i } else emptyList() }
+    }
+
+    /** Live warning level of a detector genus: 2 serious, 1 mild, 0 none; risky-family genera without their own
+     *  cited toxic species take the family's level. */
+    fun warnLevel(genus: String, family: String): Int = when {
+        genusSerious(genus) -> 2
+        genusToxic(genus) -> 1
+        family in RISKY_FAMILIES && byFamily[family].orEmpty().any { it.second.serious } -> 2
+        family in RISKY_FAMILIES && byFamily.containsKey(family) -> 1
+        else -> 0
+    }
 
     companion object {
         /** Capture: flag cited-toxic or relative species from this probability anywhere in the 4,411, not only
@@ -182,6 +212,9 @@ class WarningIndex(catalog: Catalog) {
         const val CAPTURE_MIN_P = 0.005f
         /** Live: flag a toxic genus from this whole-frame probability (regional val misses 5.5%, false alarms 37%). */
         const val LIVE_MIN_P = 0.02f
+        /** Families flagged as a whole for species without their own rows (D-045): the carrot family holds poison
+         *  hemlock and water hemlock, the classic fatal look-alikes of wild carrot, parsnip and other edibles. */
+        val RISKY_FAMILIES = setOf("Apiaceae")
     }
 }
 

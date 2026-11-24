@@ -248,6 +248,19 @@ fun LiveScreen(vm: AppViewModel) {
                     if (granted) AndroidView({ previewView }, Modifier.fillMaxSize())
                     else Text("Camera permission is needed for the live view. You can still identify a photo from the gallery.",
                         color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
+                    // capture guide (audit capture_model-7): the species model sees only the centre square of the
+                    // photo (shortest side, centre crop), so a plant near the top or bottom of a portrait shot is cut
+                    if (granted && !walk) Canvas(Modifier.fillMaxSize()) {
+                        val side = size.width
+                        val top = (size.height - side) / 2
+                        val c = Color.White.copy(alpha = 0.35f)
+                        val L = 22.dp.toPx()
+                        val sw = 1.5.dp.toPx()
+                        for ((p0, p1) in listOf(
+                            Offset(0f, top) to Offset(L, top), Offset(side - L, top) to Offset(side, top),
+                            Offset(0f, top + side) to Offset(L, top + side), Offset(side - L, top + side) to Offset(side, top + side),
+                        )) drawLine(c, p0, p1, strokeWidth = sw)
+                    }
 
                     val boxes = f?.result?.boxes.orEmpty()
                     val win = alert?.window

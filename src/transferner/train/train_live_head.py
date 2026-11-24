@@ -49,15 +49,15 @@ def teacher(root, out_path, genera, args) -> pd.DataFrame:
     if out_path.exists():
         z = np.load(out_path, allow_pickle=True)
         return pd.DataFrame({"uuid": z["uuid"], "tidx": list(z["tidx"]), "tp": list(z["tp"])})
-    meta = pd.read_parquet(root / "artifacts/img_emb/train.parquet")
-    emb = np.load(root / "artifacts/img_emb/train.npy", mmap_mode="r")
+    meta = pd.read_parquet(root / args.emb / "train.parquet")
+    emb = np.load(root / args.emb / "train.npy", mmap_mode="r")
     sp = pd.read_parquet(root / "manifests/species.parquet").sort_values("class_idx")
     gi = {g: i for i, g in enumerate(genera)}
     G = len(genera)
     s2g = torch.tensor([gi.get(g, G) for g in sp.genus], device="cuda")
-    pr = torch.load(root / "artifacts/probe.pt", map_location="cuda")
+    pr = torch.load(root / args.probe, map_location="cuda")
     W, b, scale = pr["W"].float(), pr["b"].float(), float(pr["scale"])
-    T = float((root / "artifacts/temperature.txt").read_text())
+    T = float((root / args.temperature).read_text())
     idx, prob = [], []
     with torch.no_grad():
         for s in range(0, len(meta), 65536):
@@ -487,6 +487,9 @@ def main() -> None:
     ap.add_argument("--neg-weight", type=float, default=0.25, help="selection: - this x plant-free frames with a box")
     ap.add_argument("--encounter-exempt-traits", action="store_true", help="genera with cited trait rows keep at least their balanced share")
     ap.add_argument("--eval-only", default="", help="checkpoint: val + test metrics at --size, no training, no table row")
+    ap.add_argument("--emb", default="artifacts/img_emb", help="BioCLIP embedding set for the unboxed stream and teacher (D-045: img_emb_v2)")
+    ap.add_argument("--probe", default="artifacts/probe.pt", help="teacher probe")
+    ap.add_argument("--temperature", default="artifacts/temperature.txt")
     ap.add_argument("--eval-every", type=int, default=4000, help="steps")
     ap.add_argument("--workers-img", type=int, default=14)
     ap.add_argument("--workers-box", type=int, default=6)
@@ -517,7 +520,7 @@ def main() -> None:
 
     # unboxed stream: every non-specimen training photo whose genus the detector knows (D-020: no specimens)
     t = teacher(root, out_dir / "teacher_train.npz", genera, args)
-    meta = pd.read_parquet(root / "artifacts/img_emb/train.parquet", columns=["uuid", "class_idx", "is_specimen"])
+    meta = pd.read_parquet(root / args.emb / "train.parquet", columns=["uuid", "class_idx", "is_specimen"])
     sp = pd.read_parquet(root / "manifests/species.parquet", columns=["class_idx", "genus"])
     paths = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
     u = meta[~meta.is_specimen.fillna(False).astype(bool)].merge(sp, on="class_idx").merge(paths, on="uuid").merge(t, on="uuid")

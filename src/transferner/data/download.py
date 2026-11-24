@@ -142,7 +142,7 @@ def load_queue(root: Path, full: bool = True) -> pd.DataFrame:
     sp = pd.read_parquet(root / "manifests/species.parquet")
     want = COLS + OPT if full else QUEUE_COLS
     parts = []
-    for name in ("gbif_candidates", "tol_candidates", "gbif_external"):   # append-only: order = row order
+    for name in ("gbif_candidates", "tol_candidates", "gbif_external", "gbif_season"):   # append-only: order = row order
         p = root / f"manifests/{name}.parquet"
         if p.exists():
             have = set(pq.read_schema(p).names)
@@ -347,7 +347,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="stop after this many new attempts (0 = all)")
     ap.add_argument("--retry-failed", action="store_true")
     ap.add_argument("--merge-only", action="store_true")
-    ap.add_argument("--only-source", choices=["tol", "gbif_regional", "gbif_external"])
+    ap.add_argument("--only-source", choices=["tol", "gbif_regional", "gbif_external", "gbif_season", "gbif_season_eval"])
     ap.add_argument("--max-mbps", type=float, default=None,
                     help="total payload MB/s across ALL download processes (0 = unlimited); "
                          f"persists in {BANDWIDTH_FILE}, default {DEFAULT_TOTAL_MBPS}")

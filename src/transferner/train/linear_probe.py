@@ -35,13 +35,16 @@ from ..utils.config import load, data_root
 from ..utils.csvlog import RunLog
 
 REGIONAL = "gbif_regional"
+FIELD = (REGIONAL, "gbif_season")          # D-045: the month-balanced pull is field photos too (w_field)
 
 
-def load_split(emb, s):
+def load_split(emb, s, canon=None):
     meta = pd.read_parquet(emb / f"{s}.parquet")
     e = torch.from_numpy(np.load(emb / f"{s}.npy"))
-    y = torch.tensor(meta.class_idx.to_numpy())
-    return e, y, torch.tensor((meta.source == REGIONAL).to_numpy())
+    y = meta.class_idx.to_numpy()
+    if canon is not None:                  # --merge-twins: a duplicated name trains (and scores) as one class
+        y = canon[y]
+    return e, torch.tensor(y), torch.tensor(meta.source.isin(FIELD).to_numpy())
 
 
 RARE_TRAIN = 100      # species with fewer train images than this form the "val_rare" report slice
@@ -80,6 +83,9 @@ def main() -> None:
     ap.add_argument("--w-field", type=float, default=None,
                     help="loss weight of field photos (regional, train_ext); default: config w_field")
     ap.add_argument("--w-bryo", type=float, default=1.0, help="loss weight of bryophyte species")
+    ap.add_argument("--merge-twins", action="store_true",
+                    help="D-045 (audit capture_model-1): the 28 scientific names that appear twice train as one class "
+                         "(the first index); the other twin's bias is pinned to -1e4 so it never wins")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--emb", default="artifacts/img_emb", help="embedding dir, relative to TRANSFERNER_DATA")
     ap.add_argument("--out", default="artifacts/probe.pt")
@@ -108,14 +114,20 @@ def main() -> None:
     frozen = torch.tensor(sp.zero_shot_only.to_numpy() & cfg["freeze_zero_shot"]).cuda()
     rare = torch.tensor((sp.n_train < RARE_TRAIN).to_numpy())
 
-    tr_e, tr_y, tr_field = load_split(emb, "train")
+    canon = None
+    if args.merge_twins:
+        first = {}
+        canon = np.array([first.setdefault(n, i) for i, n in zip(sp.class_idx, sp.scientific_name)])
+        print(f"merge twins: {(canon != sp.class_idx.to_numpy()).sum()} duplicate-name classes folded into their first index")
+    lsplit = lambda d, s_: load_split(d, s_, canon)                        # noqa: E731
+    tr_e, tr_y, tr_field = lsplit(emb, "train")
     if cfg["train_ext"]:
-        ex_e, ex_y, _ = load_split(emb, "train_ext")
+        ex_e, ex_y, _ = lsplit(emb, "train_ext")
         tr_e, tr_y = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y])
         tr_field = torch.cat([tr_field, torch.ones(len(ex_y), dtype=torch.bool)])   # train_ext: field photos
     for x in args.extra_train:
         d_, s_ = x.rsplit("/", 1)
-        ex_e, ex_y, ex_f = load_split(root / d_, s_)
+        ex_e, ex_y, ex_f = lsplit(root / d_, s_)
         tr_e, tr_y, tr_field = torch.cat([tr_e, ex_e]), torch.cat([tr_y, ex_y]), torch.cat([tr_field, ex_f])
         print(f"extra train {x}: {len(ex_y):,} images")
     bryo = torch.tensor(sp.phylum.isin(["Bryophyta", "Marchantiophyta"]).to_numpy())
@@ -123,9 +135,9 @@ def main() -> None:
     weighted = cfg["w_field"] != 1.0 or args.w_bryo != 1.0
     has_ext = (emb / "val_ext.npy").exists()
     if has_ext:
-        xv_e, xv_y, _ = load_split(emb, "val_ext")
-    va_e, va_y, va_reg = load_split(emb, "val")
-    te_e, te_y, _ = load_split(emb, "test")
+        xv_e, xv_y, _ = lsplit(emb, "val_ext")
+    va_e, va_y, va_reg = lsplit(emb, "val")
+    te_e, te_y, _ = lsplit(emb, "test")
     vr_e, vr_y = va_e[va_reg], va_y[va_reg]
     vrare = rare[va_y]
     vk_e, vk_y = va_e[vrare], va_y[vrare]
@@ -188,6 +200,9 @@ def main() -> None:
             best, best_ep, best_state = score, ep, (W.detach().clone(), b.detach().clone())
 
     W.data, b.data = best_state
+    if canon is not None:
+        with torch.no_grad():
+            b.data[torch.tensor(canon != np.arange(len(canon))).cuda()] = -1e4
     if cfg["shrink_k"] > 0:
         n = counts - 1                                            # training images per species, as trained
         a = torch.where(n < cfg["shrink_below"], n / (n + cfg["shrink_k"]), torch.ones_like(n)).cuda()[:, None]

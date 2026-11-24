@@ -442,6 +442,9 @@ def collate(batch):
 def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int):
     """-> genera (sorted, train), family_of (per genus), {split: [(path, frac boxes, labels)]}, image genus per split."""
     bx = pd.read_parquet(root / boxes_path)
+    ex_p = root / "manifests/exclude_uuids.parquet"            # D-045: homonym (wrong-species) rows
+    if ex_p.exists():
+        bx = bx[~bx.uuid.isin(set(pd.read_parquet(ex_p, columns=["uuid"]).uuid))]
     if fallback == "drop":
         bx = bx[~bx.fallback]
     bx = drop_nested(bx)

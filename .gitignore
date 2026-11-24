@@ -20,3 +20,4 @@ proposal/*.aux
 proposal/*.log
 proposal/*.out
 proposal/*.blg
+.claude/

@@ -43,6 +43,13 @@ def main() -> None:
     nm = pd.DataFrame(names, columns=["class_idx", "name", "is_synonym"])
     # a synonym claimed by two label species is ambiguous: drop it
     nm = nm[~(nm.is_synonym.astype(bool) & nm.duplicated("name", keep=False))].drop_duplicates("name")
+    # D-045: a synonym that GBIF resolves to another taxon (later homonym, misapplied name) pulls that plant's
+    # photos into the class (thimbleberry under Rubus cuneifolius): never match it (data/homonyms.py)
+    hp = root / "manifests/homonym_synonyms.parquet"
+    if hp.exists():
+        bad = pd.read_parquet(hp, columns=["class_idx", "synonym", "decision"])
+        bad = set(zip(bad[bad.decision == "drop"].class_idx, bad[bad.decision == "drop"].synonym))
+        nm = nm[[(c, n) not in bad for c, n in zip(nm.class_idx, nm.name)]]
 
     caps = sp[["class_idx"]].copy()
     big = sp.is_toxic | sp.is_lookalike
@@ -74,7 +81,7 @@ def main() -> None:
       FROM tiered
     ), ordered AS (
       SELECT *, row_number() OVER (PARTITION BY class_idx, is_specimen
-                                   ORDER BY img_in_obs, hash(uuid || '{cfg['splits']['seed']}')) AS rk
+                                   ORDER BY img_in_obs, is_synonym, hash(uuid || '{cfg['splits']['seed']}')) AS rk
       FROM ranked
     ), picked AS (
       -- specimens up to spec_quota; field photos fill the rest of the quota

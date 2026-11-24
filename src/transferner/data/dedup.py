@@ -50,6 +50,9 @@ def clusters(h: np.ndarray, max_d: int) -> np.ndarray:
 
 
 EXTERNAL = "gbif_external"
+# D-045: the month-balanced regional pull is deduplicated like external rows (after and against everything else,
+# never a bridge), so adding it cannot change which existing rows are kept or reach test
+LATE = (EXTERNAL, "gbif_season", "gbif_season_eval")
 
 
 def tol_source_ids(root, ids: list[str]) -> set[str]:
@@ -96,7 +99,7 @@ def main() -> None:
     cfg = load("data")
     root = data_root()
     img = pd.read_parquet(root / "manifests/images.parquet")
-    is_ext = img.source == EXTERNAL
+    is_ext = img.source.isin(LATE)
     ext = img[is_ext].drop(columns=["dup_of", "in_tol", "keep"], errors="ignore")
     img = img[~is_ext].copy()
     # rows earlier in this order win a cluster: ToL before regional, then best pick_rank
@@ -124,7 +127,7 @@ def main() -> None:
         img = pd.concat([img, ext], ignore_index=True)
 
     tol_ids = set()
-    gb = img.source.isin(["gbif_regional", EXTERNAL])
+    gb = img.source.isin(["gbif_regional", *LATE])
     if cfg["leakage"]["exclude_if_in_tol_catalog"]:
         tol_ids = tol_source_ids(root, img.loc[gb, "gbif_id"].dropna().unique().tolist())
     img["in_tol"] = (img.source == "tol") | (gb & (img.gbif_id.isin(tol_ids) | img.near_tol))

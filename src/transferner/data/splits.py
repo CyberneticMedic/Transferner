@@ -58,6 +58,12 @@ def main() -> None:
         img.loc[ex, "split"] = np.where(img.loc[ex, "observation_id"].isin(val_obs), "val_ext", "train_ext")
         img.loc[ex & img.in_tol, "split"] = "train_ext"          # near-ToL copies are not clean validation
 
+    # ---- D-045 month-balanced pull: the evaluation slice is its own split (never train, never the frozen test);
+    # gbif_season rows join train/val below like any other non-test row
+    se = img.source == "gbif_season_eval"
+    if se.any():
+        img.loc[se, "split"] = np.where(img.loc[se, "in_tol"], "unused", "test_season")
+
     # ---- train / val, grouped by observation, stratified by species
     tr, va = cfg["splits"]["ratios"]["train"], cfg["splits"]["ratios"]["val"]
     val_frac = va / (tr + va)
@@ -71,12 +77,20 @@ def main() -> None:
     obs["split"] = np.where((obs.pos % period == period - 1) & (obs.n >= 3), "val", "train")
     img.loc[rest.index, "split"] = rest.observation_id.map(dict(zip(obs.observation_id, obs.split)))
 
+    # ---- D-045 exclusions (manifests/exclude_uuids.parquet: homonym rows, ...): after the val assignment, so
+    # every other observation keeps its split (and its cached embedding), and before the cap, so the freed
+    # places go to the next rows of the same species
+    ex_p = root / "manifests/exclude_uuids.parquet"
+    if ex_p.exists():
+        ex = set(pd.read_parquet(ex_p, columns=["uuid"]).uuid)
+        img.loc[img.uuid.isin(ex) & img.split.isin(["train", "val", "train_ext", "val_ext"]), "split"] = "excluded"
+
     # ---- per-species cap on train+val (regional extras first, then ToL by pick_rank)
     cap = sp.set_index("class_idx").pipe(
         lambda s: np.where(s.is_toxic | s.is_lookalike, cfg["caps"]["toxic_or_lookalike"], cfg["caps"]["default"]))
     cap = pd.Series(cap, index=sp.class_idx)
     tv = img[img.split.isin(["train", "val"])].copy()
-    tv["_ord"] = (tv.source != "gbif_regional").astype(int)
+    tv["_ord"] = (~tv.source.isin(["gbif_regional", "gbif_season"])).astype(int)      # field photos first
     tv = tv.sort_values(["class_idx", "_ord", "pick_rank", "obs_h"])
     tv["r"] = tv.groupby("class_idx").cumcount()
     over = tv.index[tv.r >= tv.class_idx.map(cap)]
@@ -86,7 +100,7 @@ def main() -> None:
     out.to_parquet(root / "manifests/splits.parquet", index=False)
 
     counts = out.pivot_table(index="class_idx", columns="split", values="uuid", aggfunc="size", fill_value=0)
-    for s in ("train", "val", "test", "unused", "train_ext", "val_ext"):
+    for s in ("train", "val", "test", "unused", "train_ext", "val_ext", "test_season", "excluded"):
         sp[f"n_{s}"] = sp.class_idx.map(counts.get(s, pd.Series(dtype=int))).fillna(0).astype(int)
     sp["zero_shot_only"] = (sp.n_train + sp.n_val) < cfg["caps"]["min_images"]
     sp.to_parquet(root / "manifests/species.parquet", index=False)

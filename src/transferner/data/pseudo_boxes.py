@@ -22,6 +22,12 @@ boxes.parquet stays raw. `drop_nested()` is the training-time cleanup for the pa
 detector (D-015): it drops boxes that sit >= 90% inside a larger box of the same image. On the
 64-image smoke set it removes 19 of 77 boxes (13 'a leaf'); boxes/image 1.60 -> 1.21.
 
+D-046 (habit prompts): with --habit-prompts every image is scored against the union of HABIT_PROMPTS, and a box
+may only take a prompt its genus' USDA growth habits allow (prompts_for_genus): no 'a tree trunk' on herbs and
+grasses (7,000 such top-level boxes in boxes.parquet, 5,177 in train), 'grass' for graminoids, 'a fern' for
+ferns, 'moss' for bryophytes. --candidates PATH labels the uuids of a parquet (e.g. the never-boxed regional
+photos and the BioCLIP-scene-ranked ToL photos of ops/mining-20261124) instead of the per-genus selection.
+
 GPU runs go through scripts/q.sh. CPU smoke test (a few images, boxes drawn for a visual check):
   python -m transferner.data.pseudo_boxes --device cpu --limit 8 --draw 8 \\
       --out artifacts/pseudo_boxes_smoke/boxes.parquet --parts artifacts/pseudo_boxes_smoke/parts
@@ -57,6 +63,46 @@ def select(root, splits: list[str], per_genus: int, limit: int) -> pd.DataFrame:
     return d.iloc[:limit] if limit else d
 
 
+HABIT_PROMPTS = ["a plant", "a leaf", "a flower", "a fruit", "a tree trunk", "a vine", "a tree", "a shrub", "grass",
+                 "a fern", "a wildflower", "moss"]
+ALLOWED = {
+    "tree": {"a tree", "a tree trunk", "a plant", "a leaf", "a flower", "a fruit"},
+    "shrub": {"a shrub", "a plant", "a leaf", "a flower", "a fruit"},
+    "vine": {"a vine", "a plant", "a leaf", "a flower", "a fruit"},
+    "forb": {"a wildflower", "a plant", "a leaf", "a flower", "a fruit"},
+    "graminoid": {"grass", "a plant"},
+    "fern": {"a fern", "a plant", "a leaf"},
+    "nonvascular": {"moss", "a plant", "a tree trunk"},          # mosses and liverworts grow on bark
+}
+DEFAULT = {"a plant", "a leaf", "a flower", "a fruit", "a tree trunk", "a vine"}   # no habit data: the D-012 prompts
+
+
+def prompts_for_genus(root, repo) -> dict[str, set[str]]:
+    """Genus -> allowed prompts: the union over its label species' USDA growth habits (data/traits/growth_habit.csv),
+    with taxonomy for bryophytes and ferns."""
+    sp = pd.read_parquet(root / "manifests/species.parquet", columns=["scientific_name", "genus", "phylum", "class"])
+    gh = pd.read_csv(repo / "data/traits/growth_habit.csv")
+    hab = gh.set_index("scientific_name").growth_habits.fillna("").astype(str).to_dict()
+    out: dict[str, set[str]] = {}
+    for g, d in sp.groupby("genus"):
+        kinds = set()
+        if d.phylum.isin(["Bryophyta", "Marchantiophyta", "Anthocerotophyta"]).any():
+            kinds.add("nonvascular")
+        if d["class"].isin(["Polypodiopsida", "Lycopodiopsida"]).any():
+            kinds.add("fern")
+        for h in (hab.get(n, "") for n in d.scientific_name):
+            h = h.lower()
+            for key, kind in (("tree", "tree"), ("shrub", "shrub"), ("subshrub", "shrub"), ("vine", "vine"),
+                              ("forb", "forb"), ("graminoid", "graminoid"), ("lichenous", "nonvascular"),
+                              ("nonvascular", "nonvascular")):
+                if key in h:
+                    kinds.add(kind)
+        if kinds & {"fern", "nonvascular"}:                     # USDA lists ferns as forbs: no flower or fruit prompts
+            kinds -= {"forb"}
+        out[g] = set().union(*(ALLOWED[k] for k in kinds)) if kinds else set(DEFAULT)
+    return out
+
+
 class Images(Dataset):
     def __init__(self, root, paths, image_processor):
         self.root, self.paths, self.ip = root, list(paths), image_processor
@@ -70,10 +116,13 @@ class Images(Dataset):
         return px, torch.tensor(im.size)                    # (w, h) of the original image
 
 
-def boxes_for(logits, pred_boxes, sizes, min_score: float, iou: float, max_boxes: int):
+def boxes_for(logits, pred_boxes, sizes, min_score: float, iou: float, max_boxes: int, allowed=None):
     """logits (B, P, Q), pred_boxes (B, P, 4) cxcywh in [0, 1] of the padded square, sizes (B, 2) = (w, h).
+    allowed (B, Q) bool: prompts each image may take (D-046 habit prompts); None = all.
     Yields per image: xyxy fractions of the original image (n, 4), scores (n,), prompt index (n,)."""
     probs = logits.float().sigmoid()
+    if allowed is not None:
+        probs = probs * allowed.to(probs.device)[:, None, :].float()
     sizes = sizes.to(logits.device)                         # DataLoader sizes are on the CPU
     score, label = probs.max(-1)                             # best prompt per predicted box
     cx, cy, bw, bh = pred_boxes.float().unbind(-1)
@@ -146,18 +195,34 @@ def main() -> None:
     ap.add_argument("--out", default="manifests/boxes.parquet", help="relative to TRANSFERNER_DATA")
     ap.add_argument("--parts", default="artifacts/pseudo_boxes", help="resumable part files, relative")
     ap.add_argument("--draw", type=int, default=0, help="also render the first N images with boxes")
+    ap.add_argument("--candidates", default="", help="parquet with a uuid column: label these photos (in file order)")
+    ap.add_argument("--habit-prompts", action="store_true", help="D-046: prompts restricted by the genus' growth habit")
     args = ap.parse_args()
 
     from transformers import Owlv2ForObjectDetection, Owlv2Processor
     root = data_root()
     if args.device == "cpu":
         torch.set_num_threads(args.threads)
-    rows = select(root, args.splits, args.per_genus, args.limit)
+    if args.candidates:
+        cand = pd.read_parquet(args.candidates if args.candidates.startswith("/") else root / args.candidates, columns=["uuid"])
+        spl = pd.read_parquet(root / "manifests/splits.parquet", columns=["uuid", "class_idx", "split"])
+        img = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
+        sp = pd.read_parquet(root / "manifests/species.parquet", columns=["class_idx", "genus", "family"])
+        rows = cand.merge(spl, on="uuid").merge(img, on="uuid").merge(sp, on="class_idx")
+        rows = rows.drop_duplicates("uuid").reset_index(drop=True)
+        rows = rows.iloc[:args.limit] if args.limit else rows
+    else:
+        rows = select(root, args.splits, args.per_genus, args.limit)
     print(f"{len(rows):,} images, {rows.genus.nunique():,} genera, splits {rows.split.value_counts().to_dict()}",
           flush=True)
     proc = Owlv2Processor.from_pretrained(cfg["pseudo_labeler"])
     model = Owlv2ForObjectDetection.from_pretrained(cfg["pseudo_labeler"]).to(args.device).eval()
-    prompts = list(cfg["prompts"])
+    prompts = list(HABIT_PROMPTS if args.habit_prompts else cfg["prompts"])
+    if args.habit_prompts:
+        from pathlib import Path
+        allow = prompts_for_genus(root, Path(__file__).resolve().parents[3])
+        mask_of = {g: torch.tensor([p in a for p in prompts]) for g, a in allow.items()}
+        full = torch.ones(len(prompts), dtype=torch.bool)
     text = proc.tokenizer(prompts, padding="max_length", return_tensors="pt").to(args.device)
     amp = torch.autocast("cuda", dtype=torch.float16, enabled=args.device.startswith("cuda"))
 
@@ -181,7 +246,10 @@ def main() -> None:
             with amp:
                 o = model(input_ids=text.input_ids.repeat(n, 1), attention_mask=text.attention_mask.repeat(n, 1),
                           pixel_values=px.to(args.device))
-            for b, s, lab in boxes_for(o.logits, o.pred_boxes, sizes, args.min_score, args.iou, args.max_boxes):
+            allowed = None
+            if args.habit_prompts:
+                allowed = torch.stack([mask_of.get(g, full) for g in chunk.genus.iloc[j:j + n]])
+            for b, s, lab in boxes_for(o.logits, o.pred_boxes, sizes, args.min_score, args.iou, args.max_boxes, allowed):
                 r = chunk.iloc[j]
                 if len(b) == 0:
                     b, s, lab, fb = np.array([[0, 0, 1, 1]], np.float32), np.array([np.nan]), None, True

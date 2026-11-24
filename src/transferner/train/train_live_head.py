@@ -141,6 +141,47 @@ def mosaic_eval(model, net, items, size, anchors0, dev, mean, std, workers, n=20
     return {"mosaic_agnostic_ap50": m["ap50"], "mosaic_agnostic_map": m["map"]}
 
 
+def encounter_share(root, genera) -> np.ndarray:
+    """Each detector genus' share of the 2.27M regional GBIF observations (priors_state_month, all states/months)."""
+    sp = pd.read_parquet(root / "manifests/species.parquet", columns=["gbif_taxon_key", "genus"])
+    pr = pd.read_parquet(root / "manifests/priors_state_month.parquet").merge(sp, on="gbif_taxon_key")
+    c = pr.groupby("genus")["count"].sum().reindex(genera).fillna(0).to_numpy(float) + 1.0
+    return c / c.sum()
+
+
+def regional_pool(root, split, gi) -> list:
+    """BioCLIP's regional photos of a split (non-specimen, genus known to the detector) as BoxSet items with a
+    dummy box: ~20K val photos, far more per common genus than the detector's capped boxed split."""
+    m = pd.read_parquet(root / f"artifacts/img_emb/{split}.parquet", columns=["uuid", "class_idx", "is_specimen", "source"])
+    m = m[(m.source == "gbif_regional") & ~m.is_specimen.fillna(False).astype(bool)]
+    sp = pd.read_parquet(root / "manifests/species.parquet", columns=["class_idx", "genus"])
+    paths = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
+    m = m.merge(sp, on="class_idx").merge(paths, on="uuid")
+    m = m[m.genus.isin(gi)]
+    box = np.zeros((1, 4), np.float32)
+    return [(p, box, np.array([gi[g] + 1])) for p, g in zip(m.path, m.genus)]
+
+
+def encounter_eval(model, net, items, size, enc, dev, mean, std, workers) -> dict:
+    """Whole-frame genus recall per genus on regional photos, averaged with each genus weighted by how often it
+    is met (D-040): the live accuracy to expect on a walk, not on a per-species-capped photo set."""
+    model.eval()
+    hit = np.zeros(len(enc)); cnt = np.zeros(len(enc))
+    dl = DataLoader(BoxSet(data_root(), items, size, False), batch_size=128, num_workers=workers, collate_fn=collate)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        for imgs, _, _, genus in dl:
+            p = forward_raw(net, ((imgs.to(dev).float() / 255) - mean) / std)["image_logits"].argmax(1).cpu().numpy()
+            y = genus.numpy() - 1
+            np.add.at(cnt, y, 1); np.add.at(hit, y, p == y)
+    model.train()
+    m = cnt > 0
+    rec = hit[m] / cnt[m]
+    top50 = np.argsort(-enc)[:50]
+    m50 = np.zeros(len(enc), bool); m50[top50] = True
+    return {"encounter_top1": float((rec * enc[m]).sum() / enc[m].sum()), "pool_top1": float(hit.sum() / cnt.sum()),
+            "top50_recall": float((hit[m50 & m].sum()) / max(cnt[m50 & m].sum(), 1)), "pool_n": int(cnt.sum())}
+
+
 def image_eval(model, net, items, size, family_of, dev, mean, std, workers) -> dict:
     """Whole-frame genus top-1/top-5 and family top-1 on a list of (path, boxes, labels) items."""
     fam = torch.as_tensor(family_of, device=dev)
@@ -180,6 +221,12 @@ def main() -> None:
     ap.add_argument("--low-light", type=float, default=0.2)
     ap.add_argument("--mosaic", type=float, default=0.5, help="share of boxed samples that are 2x2 mosaics")
     ap.add_argument("--sampler-power", type=float, default=0.5)
+    ap.add_argument("--encounter-mix", type=float, default=0.0,
+                    help="unboxed sampler: share of each genus' training attention set by how often it is met in the region "
+                         "(its share of regional observations ^ --encounter-power); the rest stays n^sampler-power (D-040)")
+    ap.add_argument("--encounter-power", type=float, default=1.0)
+    ap.add_argument("--select", choices=["val", "encounter"], default="val",
+                    help="checkpoint selection: val whole-frame genus top-1, or encounter-weighted regional val top-1")
     ap.add_argument("--eval-every", type=int, default=4000, help="steps")
     ap.add_argument("--workers-img", type=int, default=14)
     ap.add_argument("--workers-box", type=int, default=6)
@@ -210,6 +257,16 @@ def main() -> None:
     u["g"] = u.genus.map(gi)
     n_g = u.g.value_counts()
     w = u.g.map(n_g).to_numpy(float) ** -args.sampler_power
+    enc = encounter_share(root, genera)                                   # per detector genus, sums to 1
+    if args.encounter_mix:
+        bal = (n_g.reindex(range(len(genera))).fillna(0).to_numpy() ** (1 - args.sampler_power))
+        bal = bal / bal.sum()
+        e = enc ** args.encounter_power; e = e / e.sum()
+        target = (1 - args.encounter_mix) * bal + args.encounter_mix * e   # each genus' share of the samples
+        w = (target / np.maximum(n_g.reindex(range(len(genera))).fillna(1).to_numpy(), 1))[u.g.to_numpy()]
+        top50 = np.argsort(-enc)[:50]
+        print(f"encounter mix {args.encounter_mix}: top-50 most-met genera get {target[top50].sum():.3f} of samples "
+              f"(balanced alone {bal[top50].sum():.3f}; their sighting share {enc[top50].sum():.2f})", flush=True)
     ds_img = ImgSet(root, u.path.to_numpy(), u.g.to_numpy(), np.stack(u.tidx.to_numpy()), np.stack(u.tp.to_numpy()), size, args.low_light)
     dl_img = DataLoader(ds_img, batch_size=args.batch_img, num_workers=args.workers_img, pin_memory=True, drop_last=True,
                         persistent_workers=True, prefetch_factor=4,
@@ -264,6 +321,7 @@ def main() -> None:
     im = pd.read_parquet(root / "manifests/images.parquet", columns=["path", "source"]).set_index("path").source
     regional = lambda items: [x for x in items if im.get(x[0]) == "gbif_regional"]
     val_reg = regional(splits["val"])
+    pool_val = regional_pool(root, "val", gi)
     print(f"{total:,} steps ({steps_per_epoch:,}/epoch), batch {args.batch_box}+{args.batch_img}; regional val {len(val_reg):,}", flush=True)
 
     log = RunLog(f"detector_{args.name}")
@@ -276,11 +334,13 @@ def main() -> None:
         m = image_eval(model, net, splits["val"], size, family_of, dev, mean, std, args.workers_img)
         r = image_eval(model, net, val_reg, size, family_of, dev, mean, std, args.workers_img)
         mo = mosaic_eval(model, net, splits["val"], size, anchors0, dev, mean, std, args.workers_img)
-        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo}
+        en = encounter_eval(model, net, pool_val, size, enc, dev, mean, std, args.workers_img)
+        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo, **en}
         log.log(step, "val", **row)
         print(f"step {step} val " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
-        if m["image_genus_top1"] > best:
-            best, best_step = m["image_genus_top1"], step
+        key = en["encounter_top1"] if args.select == "encounter" else m["image_genus_top1"]
+        if key > best:
+            best, best_step = key, step
             torch.save({"model": model.state_dict(), "epoch": step, "args": {**init["args"], **vars(args), "head": "shared",
                         "aux_image": 1.0}, "val": row}, out_dir / "best.pt")
 
@@ -330,13 +390,14 @@ def main() -> None:
     if step % args.eval_every:
         evaluate_now()
     if args.max_steps:
-        print(f"smoke run: best val image genus top-1 {best:.4f} at step {best_step}; no test", flush=True)
+        print(f"smoke run: best selection metric ({args.select}) {best:.4f} at step {best_step}; no test", flush=True)
         log.close()
         return
     ck = torch.load(out_dir / "best.pt", map_location=dev)
     model.load_state_dict(ck["model"])
     test = image_eval(model, net, splits["test"], size, family_of, dev, mean, std, args.workers_img)
     test.update(mosaic_eval(model, net, splits["test"], size, anchors0, dev, mean, std, args.workers_img))
+    test.update(encounter_eval(model, net, regional_pool(root, "test", gi), size, enc, dev, mean, std, args.workers_img))
     det = evaluate(model, net, DataLoader(BoxSet(root, splits["test"], size, False), batch_size=64, num_workers=args.workers_img,
                                           collate_fn=collate), anchors0, size, family_of, dev, mean, std, False, amp)
     print(f"best step {best_step}: test {test} | detection {det}", flush=True)
@@ -345,7 +406,7 @@ def main() -> None:
                 epochs=args.epochs, steps=step, best_step=best_step, n_unboxed=len(u), hours=round((time.time() - t_start) / 3600, 2),
                 **{f"val_{k}": round(v, 4) for k, v in ck["val"].items()},
                 **{f"test_{k}": round(v, 4) for k, v in test.items() if k != "n"},
-                mosaic=args.mosaic, test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4))
+                mosaic=args.mosaic, encounter_mix=args.encounter_mix, encounter_power=args.encounter_power, select=args.select, test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4))
     log.close()
 
 

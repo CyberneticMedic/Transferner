@@ -257,3 +257,11 @@ Newest at the bottom. Format: ID · date · decision · why.
     - A slider on the live sheet, shown with the prototype controls (timings on). Right means more sensitive.
     - The same slider in Settings, with a reset to 0.25.
     - The status pill counts the boxes actually drawn and keeps showing the frame's best score, so the threshold can be set against what the Moto actually scores.
+  - **D-037 result (2026-11-24):**
+    - USDA PLANTS growth habits were found for 4,198 of 4,411 species: 4,052 by exact name, 167 via a GBIF synonym, 192 unmatched. They are in `data/traits/growth_habit.csv`, with one profile URL per row.
+    - The focus prior was tuned on `mnv4_shared`'s regional photos with the rule fixed in `eval/focus_prior.py`, which chose eps 0.01.
+      - **Right chip:** genus top-1 +4.4 pt on val, +3.9 pt on test, compared at eps 1.
+      - **Wrong chip:** −8.2 pt.
+    - Per form on test (right chip): vine 52.6% → 66.0%, fern 60.7% → 69.5%, shrub 53.4% → 59.8%, tree 47.6% → 52.6%, grass-like 41.5% → 44.9%, moss 44.4% → 46.4%, herb 60.5% → 62.0% (herb covers 726 genera, too broad to help).
+    - **Safety:** live warnings are computed from the unfocused distribution (app 0.4.3), so a wrong chip never silences a toxic genus.
+    - **Shipped** in bundle 0.3 (`focus.json`, 9.9 KB). Bundle updates move unchanged files from the installed version (tested 0.2 → 0.3: only the manifest, `species.json` and `focus.json` were fetched).

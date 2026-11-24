@@ -69,6 +69,7 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
     private val outs = meta.outputs
     private val outBufs = listOf(outs.imageLogits, outs.objectness, outs.boxes).associate { it.name to runner.output(it.name) }
     private var smooth: FloatArray? = null
+    private var smoothRaw: FloatArray? = null
     val accelerator get() = runner.accelerator
     val loadMs get() = runner.loadMs
     var lastMs = 0f
@@ -92,11 +93,19 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         runner.run(mapOf(meta.input.name to inBuf), outBufs)
         lastMs = runner.lastMs
         val logits = outBufs.getValue(outs.imageLogits.name).readAsFloat(outs.imageLogits)
-        focusBias?.let { b -> for (i in logits.indices) logits[i] += b[i] }
-        val p = Detections.softmax(logits)
-        val s = smooth
-        val ps = if (s == null) p else FloatArray(p.size) { alpha * p[it] + (1 - alpha) * s[it] }
-        smooth = ps
+        // Warnings use the distribution WITHOUT the focus prior (D-038/D-037): a wrong focus chip must never
+        // silence a toxic genus. The label uses the focused distribution.
+        val raw = Detections.softmax(logits)
+        val sr = smoothRaw
+        val rawPs = if (sr == null) raw else FloatArray(raw.size) { alpha * raw[it] + (1 - alpha) * sr[it] }
+        smoothRaw = rawPs
+        val bias = focusBias
+        val ps = if (bias == null) rawPs else {
+            for (i in logits.indices) logits[i] += bias[i]
+            val p = Detections.softmax(logits)
+            val s = smooth
+            (if (s == null) p else FloatArray(p.size) { alpha * p[it] + (1 - alpha) * s[it] }).also { smooth = it }
+        }
         val obj = outBufs.getValue(outs.objectness.name).readAsFloat(outs.objectness)
         val reg = outBufs.getValue(outs.boxes.name).readAsFloat(outs.boxes)
         // Best box from 0.25, further boxes from 0.4, at most 3 (0.2 drew >= 0.5 only; on 300 regional test photos
@@ -106,13 +115,13 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         val best = boxes.firstOrNull()?.score ?: 0f
         val (genera, fam, famP) = Detections.genera(ps, meta)
         val warn = genusWarn?.let { gw ->
-            Detections.topK(ps, 8).filter { gw[it] > 0 && ps[it] >= io.github.cyberneticmedic.transferner.core.WarningIndex.LIVE_MIN_P }
-                .map { io.github.cyberneticmedic.transferner.core.LiveWarning(meta.genera[it], ps[it], gw[it] == 2) }
+            Detections.topK(rawPs, 8).filter { gw[it] > 0 && rawPs[it] >= io.github.cyberneticmedic.transferner.core.WarningIndex.LIVE_MIN_P }
+                .map { io.github.cyberneticmedic.transferner.core.LiveWarning(meta.genera[it], rawPs[it], gw[it] == 2) }
         }.orEmpty()
         return LiveResult(genera, fam, famP, boxes, meta.size, best, warn)
     }
 
-    fun resetSmoothing() { smooth = null }
+    fun resetSmoothing() { smooth = null; smoothRaw = null }
 
     override fun close() {
         inBuf.close(); outBufs.values.forEach { it.close() }; runner.close()

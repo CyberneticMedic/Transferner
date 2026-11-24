@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.cyberneticmedic.transferner"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.4.2"
+        versionCode = 8
+        versionName = "0.4.3"
         ndk { abiFilters += listOf("arm64-v8a") }        // Pixel 7-9 (D-003); keeps the APK small
     }
     buildTypes {
@@ -58,6 +58,8 @@ dependencies {
 tasks.withType<Test>().configureEach {
     systemProperty("transferner.data", System.getenv("TRANSFERNER_DATA") ?: "")
     systemProperty("transferner.server", (project.findProperty("transferner.server") as String?) ?: "")
+    systemProperty("transferner.mirror", (project.findProperty("transferner.mirror") as String?) ?: "")
+    systemProperty("transferner.mirrorServer", (project.findProperty("transferner.mirrorServer") as String?) ?: "")
     systemProperty("java.io.tmpdir", layout.buildDirectory.dir("tmp").get().asFile.path)
     testLogging { showStandardStreams = true }
 }

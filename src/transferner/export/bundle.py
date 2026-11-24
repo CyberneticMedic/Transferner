@@ -4,7 +4,9 @@ Layout under $TRANSFERNER_DATA/bundle/ (served as is by scripts/serve_bundle.sh)
   latest.json                       {"version": V, "manifest": "V/manifest.json"}
   V/manifest.json                   every file below with bytes and sha256; the app verifies each before use
   V/detector.tflite + detector.json live detector, app graph (export/detector_app.py) and its sidecar
-  V/species.tflite + species.json   BioCLIP 2.5 image tower (D-032 variant; hard link to artifacts/export)
+  V/species_<id>.tflite + species.json   BioCLIP 2.5 image tower, one file per variant (VARIANTS: gpu W8A16,
+                                    cpu dynamic INT8, cpu-small INT4 + dynamic INT8; D-032/D-035). Manifest
+                                    group "species:<id>": a phone downloads only its own variant
   V/head.bin + head.json            production probe: W as float16 [n, 1024] row-major little-endian, bias,
                                     logit scale and temperature T (logits = (scale * e.W^T + b) / T)
   V/catalog.json                    per species: names, genus, family, look-alike groups, cited trait rows,
@@ -190,11 +192,46 @@ def goldens(root: Path, gdir: Path, uuid: str, det_path: Path, det_side: dict, s
     print("goldens:", json.load(open(gdir / "golden.json")), flush=True)
 
 
+VARIANTS = {   # D-032 per-runtime choice; D-035 fallback chain gpu -> cpu -> cpu-small
+    "gpu": {"id": "gpu", "label": "INT8 weights, FP16 math (GPU)", "file": "artifacts/export/bioclip_visual_w8.tflite",
+            "accelerator": "GPU", "min_ram_gb": 10},
+    "cpu": {"id": "cpu", "label": "Dynamic INT8 (CPU)", "file": "artifacts/export/bioclip_visual_w8dyn.tflite",
+            "accelerator": "CPU", "min_ram_gb": 6},
+    "cpu-small": {"id": "cpu-small", "label": "INT4 weights, dynamic INT8 (CPU, low memory)",
+                  "file": "artifacts/export/bioclip_visual_w4dyn.tflite", "accelerator": "CPU", "min_ram_gb": 0},
+}
+
+
+def variant_check(root: Path, model: Path, head: dict, head_bin: Path, uuid: str) -> dict:
+    """The variant on the golden photo through the open_clip transform: its top 5 under the head, and the
+    embedding cosine to the GPU variant's (the reference the app's unit tests use)."""
+    from ai_edge_litert.interpreter import Interpreter
+    from torchvision.transforms import v2
+    im = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
+    pil = Image.open(root / im[im.uuid == uuid].iloc[0].path).convert("RGB")
+    crop = v2.Compose([v2.Resize(224, interpolation=v2.InterpolationMode.BICUBIC), v2.CenterCrop(224)])(pil)
+    x = ((torch.from_numpy(np.asarray(crop)).permute(2, 0, 1).float() / 255 - torch.tensor(CLIP_MEAN).view(3, 1, 1))
+         / torch.tensor(CLIP_STD).view(3, 1, 1)).numpy()[None]
+    io = tflite_io(model)
+    r = Interpreter(model_path=str(model), num_threads=4).get_signature_runner(io["signature"])
+    (i,), (o,) = io["inputs"], io["outputs"]
+    t = time.perf_counter()
+    e = r(**{i: x})[o][0].astype(np.float32)
+    ms = 1000 * (time.perf_counter() - t)
+    W = np.fromfile(head_bin, dtype="<f2").reshape(head["n"], head["dim"]).astype(np.float32)
+    lg = (head["scale"] * W @ e + np.array(head["bias"], np.float32)) / head["temperature"]
+    p = np.exp(lg - lg.max()); p /= p.sum()
+    top = np.argsort(-p)[:5]
+    ref = root / "app_golden/species_embedding.f32"
+    cos = float(e @ np.fromfile(ref, dtype="<f4")) if ref.exists() else None
+    return {"top5": [[int(k), round(float(p[k]), 4)] for k in top], "cos_to_gpu_variant": cos, "x86_ms_4_threads": round(ms)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--version", default="0.1")
+    ap.add_argument("--version", default="0.2")
     ap.add_argument("--detector", default="artifacts/detector/mnv4_shared/detector_app_int8")
-    ap.add_argument("--species-model", default="artifacts/export/bioclip_visual_w8.tflite", help="D-032 GPU variant")
+    ap.add_argument("--variants", default="gpu,cpu,cpu-small", help="species-model variants to ship (VARIANTS); missing files are skipped")
     ap.add_argument("--probe", default="artifacts/probe.pt")
     ap.add_argument("--temperature", default="artifacts/temperature.txt")
     ap.add_argument("--thumb-px", type=int, default=256)
@@ -216,18 +253,6 @@ def main() -> None:
     side["model"] = "detector.tflite"
     (out / "detector.json").write_text(json.dumps(side))
 
-    sp_src = root / args.species_model
-    os.link(sp_src, out / "species.tflite")                              # 610 MB: hard link, not a copy
-    sio = tflite_io(sp_src)
-    (in_name, ind), = sio["inputs"].items()
-    (out_name, outd), = sio["outputs"].items()
-    (out / "species.json").write_text(json.dumps({
-        "model": "species.tflite", "variant": Path(args.species_model).stem, "signature": sio["signature"],
-        "input": {"name": in_name, **ind}, "output": {"name": out_name, **outd},
-        "preprocess": {"resize": "shortest side to 224, bicubic, antialiased", "crop": "centre 224 x 224",
-                       "mean": CLIP_MEAN, "std": CLIP_STD, "layout": "NCHW"},
-        "output_normalised": True}))
-
     pr = torch.load(root / args.probe, map_location="cpu")
     W = pr["W"].float().numpy()
     W.astype("<f2").tofile(out / "head.bin")
@@ -236,13 +261,37 @@ def main() -> None:
             "bias": [float(v) for v in pr["b"]], "probe": args.probe}
     (out / "head.json").write_text(json.dumps(head))
 
+    variants, groups = [], {}
+    for v in (VARIANTS[k] for k in args.variants.split(",")):
+        src = root / v["file"]
+        if not src.exists():
+            print(f"variant {v['id']}: {src} missing, skipped", flush=True)
+            continue
+        name = f"species_{v['id']}.tflite"
+        os.link(src, out / name)                                         # 0.3-0.6 GB: hard link, not a copy
+        sio = tflite_io(src)
+        (in_name, ind), = sio["inputs"].items()
+        (out_name, outd), = sio["outputs"].items()
+        variants.append({
+            "id": v["id"], "label": v["label"], "model": name, "variant": src.stem, "accelerator": v["accelerator"],
+            "min_ram_gb": v["min_ram_gb"], "bytes": src.stat().st_size, "signature": sio["signature"],
+            "input": {"name": in_name, **ind}, "output": {"name": out_name, **outd},
+            "preprocess": {"resize": "shortest side to 224, bicubic, antialiased", "crop": "centre 224 x 224",
+                           "mean": CLIP_MEAN, "std": CLIP_STD, "layout": "NCHW"},
+            "output_normalised": True, "check": variant_check(root, src, head, out / "head.bin", args.golden_uuid)})
+        groups[name] = f"species:{v['id']}"
+        print(f"variant {v['id']}: {name} {src.stat().st_size / 2**20:.0f} MB, golden check {variants[-1]['check']}", flush=True)
+    assert variants, "no species-model variant found"
+    (out / "species.json").write_text(json.dumps({"variants": variants}))
+
     cat = catalog(root, out, repo, args.thumb_px)
     assert len(cat) == head["n"]
     (out / "catalog.json").write_text(json.dumps({"species": cat, "region": ["SC", "NC", "GA", "TN"],
                                                   "trait_rule": "cited rows only; absence never means safe (D-027)"}))
     files = sorted(p for p in out.rglob("*") if p.is_file())
     manifest = {"version": args.version, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "files": [{"path": str(p.relative_to(out)), "bytes": p.stat().st_size, "sha256": sha256(p)} for p in files]}
+                "files": [{"path": str(p.relative_to(out)), "bytes": p.stat().st_size, "sha256": sha256(p),
+                           **({"group": groups[p.name]} if p.name in groups else {})} for p in files]}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=0))
     (base / "latest.json").write_text(json.dumps({"version": args.version, "manifest": f"{args.version}/manifest.json"}))
     total = sum(f["bytes"] for f in manifest["files"])
@@ -252,7 +301,7 @@ def main() -> None:
           f"species with trait rows {n_tr}/{len(cat)} ({time.time() - t0:.0f} s)", flush=True)
     if args.goldens:
         goldens(root, Path(args.goldens).expanduser(), args.golden_uuid, out / "detector.tflite", side,
-                out / "species.tflite", {**head, "_bin": out / "head.bin"})
+                out / variants[0]["model"], {**head, "_bin": out / "head.bin"})
 
 
 if __name__ == "__main__":

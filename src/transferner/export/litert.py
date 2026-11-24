@@ -19,6 +19,7 @@ Recipes (litert_torch generative quant recipes, applied by ai-edge-quantizer aft
   fp16  FP16 weights
   w8    INT8 weight-only, per channel (the deployable W8A16 of the efficiency sweep)
   w8dyn INT8 weights + dynamic INT8 activations (XNNPACK-style, the sweep's w8a8dyn)
+  w4dyn INT4 weights (blocks of 32) + dynamic INT8 activations (the sweep's w4a8dyn_g32, 8da4w)
   int8static  NPU-style full INT8 via the PT2E quantizer: per-channel INT8 weights, static
         per-tensor INT8 activations (HistogramObserver, or --act-observer minmax) on every
         linear, conv and add, calibrated on --calib train images; --smooth A folds SmoothQuant
@@ -48,7 +49,7 @@ import torch.nn.functional as F
 
 from ..utils.config import RESULTS, data_root, load
 
-RECIPES = ("fp32", "fp16", "w8", "w8dyn", "int8static")
+RECIPES = ("fp32", "fp16", "w8", "w8dyn", "w4dyn", "int8static")
 
 
 def mem_guard(min_free_gb: float) -> None:
@@ -88,6 +89,9 @@ def quant_config(recipe: str):
         return quant_recipes.full_weight_only_recipe(weight_dtype=quant_attrs.Dtype.INT8)
     if recipe == "w8dyn":
         return quant_recipes.full_dynamic_recipe(weight_dtype=quant_attrs.Dtype.INT8)
+    if recipe == "w4dyn":                       # 8da4w (D-032's low-memory CPU variant): INT4 weights, blocks of 32
+        return quant_recipes.full_dynamic_recipe(weight_dtype=quant_attrs.Dtype.INT4,
+                                                 granularity=quant_attrs.Granularity.BLOCKWISE_32)
     raise ValueError(recipe)
 
 

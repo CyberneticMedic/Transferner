@@ -27,13 +27,17 @@ import kotlin.math.abs
 
 /**
  * Checks the app's Kotlin pre- and post-processing against the Python pipeline on one held-out photo.
- * Goldens and the bundle are data ($TRANSFERNER_DATA/app_golden, $TRANSFERNER_DATA/bundle/0.1, written by
+ * Goldens and the bundle are data ($TRANSFERNER_DATA/app_golden, the latest $TRANSFERNER_DATA/bundle, written by
  * src/transferner/export/bundle.py --goldens); the tests skip when they are absent.
  */
 class GoldenTest {
     private val data = System.getProperty("transferner.data").orEmpty()
     private val golden = File(data, "app_golden")
-    private val bundle = File(data, "bundle/0.1")
+    private val bundle: File by lazy {
+        val latest = File(data, "bundle/latest.json")
+        if (!latest.exists()) File(data, "bundle/none")
+        else File(data, "bundle/" + BundleJson.decodeFromString<io.github.cyberneticmedic.transferner.core.Latest>(latest.readText()).version)
+    }
 
     private fun need() = assumeTrue("goldens/bundle not found under '$data'", golden.isDirectory && bundle.isDirectory)
     private fun floats(name: String): FloatArray {
@@ -43,7 +47,9 @@ class GoldenTest {
     private fun bytes(name: String) = File(golden, name).readBytes()
     private val g: JsonObject by lazy { BundleJson.parseToJsonElement(File(golden, "golden.json").readText()).jsonObject }
     private val det: DetectorMeta by lazy { BundleJson.decodeFromString(File(bundle, "detector.json").readText()) }
-    private val sp: SpeciesModelMeta by lazy { BundleJson.decodeFromString(File(bundle, "species.json").readText()) }
+    private val sp: SpeciesModelMeta by lazy {
+        BundleJson.decodeFromString<io.github.cyberneticmedic.transferner.core.SpeciesModels>(File(bundle, "species.json").readText()).variants.first()
+    }
 
     private fun photo(): Triple<IntArray, Int, Int> {
         val im = ImageIO.read(File(golden, "photo.jpg"))

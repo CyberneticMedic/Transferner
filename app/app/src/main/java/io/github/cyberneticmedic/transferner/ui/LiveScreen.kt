@@ -85,7 +85,17 @@ fun LiveScreen(vm: AppViewModel) {
     }
 
     val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
-    val capture = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build() }
+    // ~3 MP stills: the species model needs 224 px and the log keeps 1080 px, so full 50 MP captures would
+    // only cost time and memory on budget phones
+    val capture = remember {
+        ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .setResolutionSelector(ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(ResolutionStrategy(Size(2048, 1536), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                .build())
+            .build()
+    }
+    var bound by remember { mutableStateOf(false) }
     DisposableEffect(granted) {
         if (!granted) return@DisposableEffect onDispose {}
         val future = ProcessCameraProvider.getInstance(context)
@@ -103,10 +113,18 @@ fun LiveScreen(vm: AppViewModel) {
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888).build()
             analysis.setAnalyzer(vm.detectorExecutor) { vm.analyze(it) }
             provider.unbindAll()
-            try {
-                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, capture)
+            // fallback: if the phone cannot run preview + analysis + capture together, drop the live analysis
+            bound = try {
+                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, capture); true
             } catch (e: Exception) {
-                vm.message.value = "Camera: ${e.message}"
+                try {
+                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+                    vm.message.value = "This camera cannot run the live scanner alongside capture; capture still works."
+                    true
+                } catch (e2: Exception) {
+                    vm.message.value = "Camera unavailable (${e2.message}). Identify photos from the gallery instead."
+                    false
+                }
             }
         }, ContextCompat.getMainExecutor(context))
         onDispose { if (future.isDone) future.get().unbindAll() }
@@ -195,7 +213,7 @@ fun LiveScreen(vm: AppViewModel) {
                 Box(
                     Modifier.size(78.dp).border(4.dp, Color.White, CircleShape).padding(9.dp).background(Color.White, CircleShape)
                         .semantics { contentDescription = "Capture and identify"; role = Role.Button }
-                        .clickable(enabled = busy == null && granted) {
+                        .clickable(enabled = busy == null && granted && bound) {
                             capture.takePicture(vm.detectorExecutor, object : ImageCapture.OnImageCapturedCallback() {
                                 override fun onCaptureSuccess(image: ImageProxy) {
                                     val buf = image.planes[0].buffer

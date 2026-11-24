@@ -38,6 +38,9 @@ import io.github.cyberneticmedic.transferner.R
 @Composable
 fun SetupScreen(vm: AppViewModel) {
     val state by vm.bundle.collectAsState()
+    val device by vm.device.collectAsState()
+    val plan by vm.plan.collectAsState()
+    val needed by vm.neededVariant.collectAsState()
     var server by remember { mutableStateOf(vm.prefs.server) }
     val downloading = state is BundleState.Downloading
     Column(
@@ -56,7 +59,7 @@ fun SetupScreen(vm: AppViewModel) {
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Model bundle", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text("about 0.7 GB", fontSize = 13.sp, color = C.muted)
+                Text("0.4 to 0.7 GB", fontSize = 13.sp, color = C.muted)
             }
             OutlinedTextField(
                 value = server, onValueChange = { server = it }, singleLine = true, enabled = !downloading,
@@ -64,12 +67,21 @@ fun SetupScreen(vm: AppViewModel) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth(),
             )
             Text("Use Wi-Fi. Every file is checked against the bundle's SHA-256 manifest before it is used.", fontSize = 12.5.sp, color = C.muted, lineHeight = 18.sp)
+            device?.let { Text("This phone: ${it.label}", fontSize = 12.5.sp, color = C.ink2, lineHeight = 18.sp) }
+            Text(
+                plan?.let { "Species model for this phone: ${variantName(it.speciesVariant)} on the ${it.speciesRuntime.name} (${it.reason})." }
+                    ?: "The app picks the species-model variant that fits this phone: GPU on flagships, CPU (INT8 or INT4) elsewhere.",
+                fontSize = 12.5.sp, color = C.ink2, lineHeight = 18.sp)
+            needed?.let {
+                Text("This phone needs the ${variantName(it)} species model instead of the one installed. Download it to continue (the shared files are kept).",
+                    fontSize = 13.sp, color = C.caution, lineHeight = 18.sp)
+            }
             when (val s = state) {
                 is BundleState.Downloading -> {
                     val p = s.p
                     if (p == null || p.totalBytes == 0L) LinearProgressIndicator(Modifier.fillMaxWidth(), color = C.green)
                     else LinearProgressIndicator(progress = { p.doneBytes.toFloat() / p.totalBytes }, modifier = Modifier.fillMaxWidth(), color = C.green)
-                    Text(p?.let { "%.0f / %.0f MB · %s".format(it.doneBytes / 1048576.0, it.totalBytes / 1048576.0, it.file) } ?: "Connecting…",
+                    Text(p?.let { "%.0f / %.0f MB · %s · variant %s".format(it.doneBytes / 1048576.0, it.totalBytes / 1048576.0, it.file, it.variant) } ?: "Connecting…",
                         fontSize = 12.5.sp, color = C.muted)
                 }
                 is BundleState.Failed -> Text("Download failed: ${s.message}", fontSize = 13.sp, color = C.caution)
@@ -82,7 +94,7 @@ fun SetupScreen(vm: AppViewModel) {
             colors = ButtonDefaults.buttonColors(containerColor = C.green), shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) { Text(if (downloading) "Downloading…" else "Download and continue", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
-        Text("Prototype 0.1 · camera permission is asked next", fontSize = 12.sp, color = C.muted, modifier = Modifier.align(Alignment.CenterHorizontally))
+        Text("Prototype 0.2 · camera permission is asked next", fontSize = 12.sp, color = C.muted, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -92,4 +104,11 @@ private fun Fact(icon: Int, tint: androidx.compose.ui.graphics.Color, text: Stri
         Glyph(icon, null, tint)
         Text(text, fontSize = 14.5.sp, color = C.ink, lineHeight = 20.sp)
     }
+}
+
+fun variantName(id: String) = when (id) {
+    "gpu" -> "GPU (INT8 weights)"
+    "cpu" -> "CPU (dynamic INT8)"
+    "cpu-small" -> "CPU low-memory (INT4)"
+    else -> id
 }

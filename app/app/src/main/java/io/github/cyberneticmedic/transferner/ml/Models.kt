@@ -10,43 +10,44 @@ import io.github.cyberneticmedic.transferner.core.DetectorMeta
 import io.github.cyberneticmedic.transferner.core.Detections
 import io.github.cyberneticmedic.transferner.core.LiveResult
 import io.github.cyberneticmedic.transferner.core.Preprocess
+import io.github.cyberneticmedic.transferner.core.Runtime
 import io.github.cyberneticmedic.transferner.core.SpeciesHead
 import io.github.cyberneticmedic.transferner.core.SpeciesModelMeta
 import io.github.cyberneticmedic.transferner.core.TensorInfo
 import java.io.File
 
-/** Which LiteRT accelerator a model should use. AUTO tries GPU, then CPU (D-032; NPU needs the phone first). */
+/** Detector runtime setting: AUTO benchmarks GPU against CPU on the phone at first launch (D-035). */
 enum class AccelChoice(val label: String) { AUTO("Auto"), GPU("GPU"), CPU("CPU") }
 
 /**
- * One LiteRT CompiledModel. Creation and every run must happen on the same thread (GPU contexts are
- * thread-bound), so each model lives on its own single-thread executor in the ViewModel.
+ * One LiteRT CompiledModel on one runtime. Creation and every run must happen on the same thread (GPU
+ * contexts are thread-bound), so each model lives on its own single-thread executor in the ViewModel.
+ * On the CPU, XNNPACK's weight cache ([cache]) keeps the packed weights in a file: the first load packs
+ * them once, later loads map the file (faster, and file-backed rather than anonymous memory).
  */
-class ModelRunner(path: String, private val signature: String, choice: AccelChoice, env: Environment) : AutoCloseable {
+class ModelRunner(
+    path: String, private val signature: String, runtime: Runtime, threads: Int, cache: File?, env: Environment,
+) : AutoCloseable {
     val model: CompiledModel
-    val accelerator: String
+    val accelerator: String = runtime.name
     val loadMs: Long
+    val usedCache: Boolean
 
     init {
-        val order = when (choice) {
-            AccelChoice.AUTO -> listOf(Accelerator.GPU, Accelerator.CPU)
-            AccelChoice.GPU -> listOf(Accelerator.GPU)
-            AccelChoice.CPU -> listOf(Accelerator.CPU)
-        }
         val t0 = System.nanoTime()
-        var last: Throwable? = null
-        var made: Pair<CompiledModel, Accelerator>? = null
-        for (acc in order) {
-            try {
-                made = CompiledModel.create(path, CompiledModel.Options(acc), env) to acc
-                break
-            } catch (e: Throwable) {
-                last = e
-            }
+        fun options(withCache: Boolean) = CompiledModel.Options(if (runtime == Runtime.GPU) Accelerator.GPU else Accelerator.CPU).apply {
+            cpuOptions = CompiledModel.CpuOptions(threads, null, if (withCache) cache?.path else null)
         }
-        val (m, acc) = made ?: throw IllegalStateException("could not load ${File(path).name} on $order", last)
-        model = m
-        accelerator = acc.name
+        var cached = cache != null
+        model = try {
+            CompiledModel.create(path, options(cached), env)
+        } catch (e: Exception) {
+            if (!cached) throw e
+            cache?.delete()                                  // a stale or unsupported cache: load without it
+            cached = false
+            CompiledModel.create(path, options(false), env)
+        }
+        usedCache = cached
         loadMs = (System.nanoTime() - t0) / 1_000_000
     }
 
@@ -62,8 +63,8 @@ private fun TensorBuffer.readAsFloat(t: TensorInfo): FloatArray =
     if (t.isInt8) Detections.dequant(readInt8(), t) else readFloat()
 
 /** The live detector's app graph (export/detector_app.py): whole-frame genus logits, objectness, boxes. */
-class LiveDetector(dir: File, val meta: DetectorMeta, choice: AccelChoice, env: Environment) : AutoCloseable {
-    private val runner = ModelRunner(File(dir, meta.model).path, meta.signature, choice, env)
+class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads: Int, env: Environment) : AutoCloseable {
+    private val runner = ModelRunner(File(dir, meta.model).path, meta.signature, runtime, threads, null, env)
     private val inBuf = runner.input(meta.input.name)
     private val outs = meta.outputs
     private val outBufs = listOf(outs.imageLogits, outs.objectness, outs.boxes).associate { it.name to runner.output(it.name) }
@@ -105,9 +106,10 @@ class LiveDetector(dir: File, val meta: DetectorMeta, choice: AccelChoice, env: 
 /** BioCLIP image tower + the regional head: one still -> top-5 species (D-002 stage 2). */
 class SpeciesIdentifier(
     dir: File, val meta: SpeciesModelMeta, private val head: SpeciesHead, private val catalog: Catalog,
-    choice: AccelChoice, env: Environment,
+    runtime: Runtime, threads: Int, cache: File?, env: Environment,
 ) : AutoCloseable {
-    private val runner = ModelRunner(File(dir, meta.model).path, meta.signature, choice, env)
+    private val runner = ModelRunner(File(dir, meta.model).path, meta.signature, runtime, threads, cache, env)
+    val usedCache get() = runner.usedCache
     private val inBuf = runner.input(meta.input.name)
     private val outBuf = runner.output(meta.output.name)
     val accelerator get() = runner.accelerator

@@ -170,3 +170,23 @@ Newest at the bottom. Format: ID · date · decision · why.
     - Post-processing (softmax, anchor decode, NMS) and the species head match Python to < 1e-4 and 2e-3.
     - The bundle download passes end to end against the server.
   - **Not verified (needs the Pixel):** LiteRT on device (GPU compile of the ViT-H graph, latency, memory), CameraX, and the UI on a real screen.
+- **D-035 · 2026-11-23 · App 0.2: device plans and a fallback chain down to budget phones (Moto G Power 2025).**
+  - **Target added by the user:** Moto G Power 2025: MediaTek Dimensity 6300 (2× Cortex-A76 2.4 GHz + 6× A55 2.0 GHz), Mali-G57 MC2, 8 GB, Android 15, no NPU confirmed by a primary source.
+    - The 0.1 build would have tried the W8A16 ViT-H on that GPU (an out-of-memory risk), then fallen back to it on the CPU, where its INT8 weights are expanded to float.
+  - **Three species-model variants in one bundle** (`export/bundle.py VARIANTS`). Manifest groups mean a phone downloads 99 MB of shared files plus one variant: 708 or 443 MB in total.
+    - `gpu`: W8A16 (D-032).
+    - `cpu`: dynamic INT8 (8da8w, D-032's XNNPACK choice). Logit cosine 0.9992 vs W8A16, same top 5 on the golden photo, 3.3× faster on x86 CPU.
+    - `cpu-small`: new export `--recipe w4dyn`, INT4 weights in blocks of 32 + dynamic INT8 (8da4w, 345 MB). On 128 regional val photos: embedding cosine 0.985 (min 0.954) to FP32, top-1 agreement 97.7%, and top-1 accuracy equal to FP32 (96.1%).
+  - **Plan from the device profile** (`core/DevicePlan.kt`, unit-tested on Pixel 9 Pro, Moto G Power 2025 and a 4 GB Moto G 2025):
+    - The GPU variant only on SoCs whose GPUs are known to hold ViT-H (Google Tensor, Snapdragon 8 / SM8xxx, Dimensity 9xxx) with ≥ 10 GB.
+    - Otherwise the `cpu` variant at ≥ 6 GB.
+    - Otherwise `cpu-small`.
+    - The live detector's runtime is measured on the phone (6 synthetic frames per runtime) rather than assumed.
+  - **Fallback chain:** `gpu` → `cpu` → `cpu-small` → 2 threads, on a load or run exception, or on restart after a native crash. A crash flag is committed synchronously before every native load and run.
+  - **Budget-phone behaviour:**
+    - XNNPACK weight cache file: packs once, then file-backed loads.
+    - The live detector pauses during identification and is capped at 8 fps (6 fps below 6 GB).
+    - Captures are about 3 MP.
+    - Camera binding drops the live analysis if the camera can't run three use cases together.
+    - Storage and memory are checked before download and load.
+  - **Not verified:** all of this behaviour on the Moto itself. The identification time on 2 A76 cores against the 10 s budget is the open number; Settings shows it and lets the user compare 2 and 4 threads.

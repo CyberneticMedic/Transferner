@@ -14,7 +14,10 @@ data class Latest(val version: String, val manifest: String)
 data class Manifest(val version: String, val created: String = "", val files: List<ManifestFile>)
 
 @Serializable
-data class ManifestFile(val path: String, val bytes: Long, val sha256: String)
+data class ManifestFile(val path: String, val bytes: Long, val sha256: String, val group: String? = null) {
+    /** Files of one species-model variant carry group "species:<id>"; the rest are needed by every phone. */
+    fun wantedFor(variant: String) = group == null || group == "species:$variant"
+}
 
 @Serializable
 data class TensorInfo(
@@ -64,15 +67,26 @@ data class DetectorMeta(
 @Serializable
 data class SpeciesPreprocess(val mean: List<Float>, val std: List<Float>)
 
+/** One species-model variant (D-032/D-035): "gpu" W8A16, "cpu" dynamic INT8, "cpu-small" INT4 + dynamic INT8. */
 @Serializable
 data class SpeciesModelMeta(
+    val id: String,
+    val label: String,
     val model: String,
     val variant: String,
+    val accelerator: String,                                // GPU | CPU: what the variant is built for
+    @SerialName("min_ram_gb") val minRamGb: Float = 0f,
+    val bytes: Long = 0,
     val signature: String,
     val input: TensorInfo,
     val output: TensorInfo,
     val preprocess: SpeciesPreprocess,
 )
+
+@Serializable
+data class SpeciesModels(val variants: List<SpeciesModelMeta>) {
+    operator fun get(id: String) = variants.firstOrNull { it.id == id }
+}
 
 @Serializable
 data class HeadMeta(

@@ -1,5 +1,7 @@
 package io.github.cyberneticmedic.transferner
 
+import io.github.cyberneticmedic.transferner.core.DeviceInfo
+import io.github.cyberneticmedic.transferner.core.DevicePlanner
 import io.github.cyberneticmedic.transferner.data.BundleRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -20,16 +22,25 @@ class DownloadTest {
             val repo = BundleRepository(root)
             var calls = 0
             val t0 = System.nanoTime()
-            val v = repo.download(server) { calls++ }
+            // a Moto G Power 2025 profile: the planner gives the CPU variant, and only its model file comes down
+            val moto = DeviceInfo("motorola", "moto g power - 2025", "Mediatek", "MT6835", 8f, 8, 35, true)
+            val v = repo.download(server, { DevicePlanner.plan(moto, it.variants).speciesVariant }) { calls++ }
             println("downloaded bundle $v in %.1f s (%d progress callbacks)".format((System.nanoTime() - t0) / 1e9, calls))
             val files = repo.load()
             assertNotNull(files)
-            assertEquals(4411, files!!.catalog.species.size)
+            assertEquals("cpu", files!!.variant)
+            assertEquals(4411, files.catalog.species.size)
             assertEquals(files.head.n, files.catalog.species.size)
-            // a second run keeps verified files instead of downloading again
+            val models = files.dir.listFiles()!!.filter { it.name.startsWith("species_") && it.name.endsWith(".tflite") }.map { it.name }
+            assertEquals(listOf("species_cpu.tflite"), models)
+            // switching to the INT4 variant keeps the shared files and swaps the model file
             val t1 = System.nanoTime()
-            repo.download(server) {}
-            println("re-run (all files verified in place) %.1f s".format((System.nanoTime() - t1) / 1e9))
+            repo.download(server, { "cpu-small" }) {}
+            println("switch to cpu-small %.1f s".format((System.nanoTime() - t1) / 1e9))
+            val small = repo.load()!!
+            assertEquals("cpu-small", small.variant)
+            assertEquals(listOf("species_cpu-small.tflite"),
+                small.dir.listFiles()!!.filter { it.name.startsWith("species_") && it.name.endsWith(".tflite") }.map { it.name })
         } finally {
             root.deleteRecursively()
         }

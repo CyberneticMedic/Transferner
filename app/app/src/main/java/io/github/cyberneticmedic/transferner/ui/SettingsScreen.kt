@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.cyberneticmedic.transferner.R
+import io.github.cyberneticmedic.transferner.core.Runtime
 import io.github.cyberneticmedic.transferner.ml.AccelChoice
 
 @Composable
@@ -37,40 +39,74 @@ fun SettingsScreen(vm: AppViewModel) {
     val models by vm.models.collectAsState()
     val bundle by vm.bundle.collectAsState()
     val live by vm.live.collectAsState()
+    val device by vm.device.collectAsState()
+    val plan by vm.plan.collectAsState()
+    val last by vm.result.collectAsState()
     val files = (bundle as? BundleState.Ready)?.files
     var detAcc by remember { mutableStateOf(vm.prefs.detectorAccel) }
-    var spAcc by remember { mutableStateOf(vm.prefs.speciesAccel) }
     var boxes by remember { mutableStateOf(vm.prefs.showBoxes) }
     var timings by remember { mutableStateOf(vm.prefs.showTimings) }
 
     Column(Modifier.fillMaxSize().background(C.paper).safeDrawingPadding()) {
         TopBar("Models & settings", R.drawable.ic_back, { vm.back() })
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionLabel("Installed models")
+            SectionLabel("This phone")
             Card {
-                Row { Text("Live detector", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f)); Text(files?.let { mb(it, it.detector.model) } ?: "", fontSize = 13.sp, color = C.muted) }
-                Text("MobileNetV4 + SSDLite, full INT8 · ${files?.detector?.genera?.size ?: 0} genera", fontSize = 13.sp, color = C.ink2)
-                Text("Runtime: ${models.detector}", fontSize = 13.sp, color = C.muted)
-                live?.let { Text("Last frame: model %.1f ms + preprocessing %.1f ms".format(it.modelMs, it.preMs), fontSize = 13.sp, color = C.muted) }
-                AccelRow(detAcc) { detAcc = it; vm.prefs.detectorAccel = it }
+                Text(device?.label ?: "…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("GPU for LiteRT: " + if (device?.gpuAvailable == true) "available" else "not available", fontSize = 13.sp, color = C.muted)
+                plan?.let { Text("Plan: ${variantName(it.speciesVariant)} on the ${it.speciesRuntime.name}, ${it.speciesThreads} threads, live up to ${it.liveMaxFps} fps. ${it.reason}.", fontSize = 13.sp, color = C.ink2, lineHeight = 18.sp) }
+                OutlinedButton(onClick = { vm.replan() }, shape = RoundedCornerShape(10.dp)) { Text("Re-check this phone", color = C.green) }
             }
+
+            SectionLabel("Live detector", Modifier.padding(top = 6.dp))
             Card {
-                Row { Text("Species model", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f)); Text(files?.let { mb(it, it.species.model) } ?: "", fontSize = 13.sp, color = C.muted) }
-                Text("BioCLIP 2.5 image tower (${files?.species?.variant ?: "?"}) + regional head · ${files?.head?.n ?: 0} species", fontSize = 13.sp, color = C.ink2)
-                Text("Runtime: ${models.species}", fontSize = 13.sp, color = C.muted)
-                vm.result.collectAsState().value?.takeIf { it.modelMs > 0 }?.let {
+                Text("MobileNetV4 + SSDLite, full INT8 · ${files?.detector?.genera?.size ?: 0} genera · ${files?.let { mb(it, it.detector.model) } ?: ""}", fontSize = 13.sp, color = C.ink2)
+                Text("Runtime: ${models.detector}", fontSize = 13.sp, color = C.muted, lineHeight = 18.sp)
+                live?.let { Text("Last frame: model %.1f ms + preprocessing %.1f ms".format(it.modelMs, it.preMs), fontSize = 13.sp, color = C.muted) }
+                Text("Run on", fontSize = 13.sp, color = C.ink2)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AccelChoice.entries.forEach { a ->
+                        FilterChip(selected = detAcc == a, onClick = { detAcc = a; vm.prefs.detectorAccel = a; vm.reloadModels() },
+                            label = { Text(if (a == AccelChoice.AUTO) "Auto (measured)" else a.label) })
+                    }
+                }
+                OutlinedButton(onClick = { detAcc = AccelChoice.AUTO; vm.rerunDetectorBenchmark() }, shape = RoundedCornerShape(10.dp)) {
+                    Text("Measure GPU vs CPU again", color = C.green)
+                }
+            }
+
+            SectionLabel("Species model", Modifier.padding(top = 6.dp))
+            Card {
+                Text("BioCLIP 2.5 image tower + regional head · ${files?.head?.n ?: 0} species", fontSize = 13.sp, color = C.ink2)
+                Text("Runtime: ${models.species}", fontSize = 13.sp, color = C.muted, lineHeight = 18.sp)
+                last?.takeIf { it.modelMs > 0 }?.let {
                     Text("Last identification: model %.2f s, total %.2f s (budget 10 s)".format(it.modelMs / 1000, it.totalMs / 1000), fontSize = 13.sp, color = C.muted)
                 }
-                AccelRow(spAcc) { spAcc = it; vm.prefs.speciesAccel = it }
-            }
-            OutlinedButton(onClick = { vm.reloadModels() }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-                Text("Reload models with these runtimes", color = C.green, fontWeight = FontWeight.SemiBold)
+                files?.speciesModels?.variants?.forEach { v ->
+                    val installed = v.id == files.variant
+                    val on = plan?.speciesVariant == v.id
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(v.label, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = C.ink)
+                            Text("%.0f MB · %s".format(v.bytes / 1048576.0, if (installed) "on this phone" else "download to use"), fontSize = 12.5.sp, color = C.muted)
+                        }
+                        FilterChip(selected = on, onClick = { vm.chooseVariant(v.id, if (v.accelerator == "GPU") Runtime.GPU else Runtime.CPU) },
+                            label = { Text(if (on) "In use" else "Use") })
+                    }
+                }
+                Text("CPU threads", fontSize = 13.sp, color = C.ink2)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(2, 4, 6, 8).forEach { n ->
+                        FilterChip(selected = plan?.speciesThreads == n, onClick = { vm.setSpeciesThreads(n) }, label = { Text("$n") })
+                    }
+                }
+                Text("On phones with 2 fast and 6 slow cores (e.g. Dimensity 6300), compare 2 and 4 threads.", fontSize = 12.5.sp, color = C.muted, lineHeight = 17.sp)
             }
             models.error?.let { Text(it, fontSize = 12.sp, color = C.caution) }
 
             SectionLabel("Bundle", Modifier.padding(top = 6.dp))
             Card {
-                Text("Version ${files?.manifest?.version ?: "none"} · ${files?.manifest?.files?.size ?: 0} files, verified", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("Version ${files?.manifest?.version ?: "none"} · variant ${files?.variant ?: "-"} · verified", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Text("Server: ${vm.prefs.server}", fontSize = 13.sp, color = C.muted)
                 OutlinedButton(onClick = { vm.go(Screen.SETUP) }, shape = RoundedCornerShape(10.dp)) { Text("Check for a new bundle", color = C.green) }
             }
@@ -79,7 +115,7 @@ fun SettingsScreen(vm: AppViewModel) {
             Card {
                 Toggle("Show live boxes", boxes) { boxes = it; vm.prefs.showBoxes = it }
                 Toggle("Show timings", timings) { timings = it; vm.prefs.showTimings = it }
-                Text("The live label comes from the whole frame (D-033: 56% genus top-1 against 49% for the best box). NPU runs need the phone tests first.",
+                Text("The live label comes from the whole frame (D-033). If the app is stopped while loading or running a model, it steps down to the next fallback on restart (D-035).",
                     fontSize = 12.5.sp, color = C.muted, lineHeight = 17.sp)
             }
         }
@@ -93,14 +129,6 @@ private fun mb(files: io.github.cyberneticmedic.transferner.data.BundleFiles, na
 private fun Card(content: @Composable ColumnScope.() -> Unit) =
     Column(Modifier.fillMaxWidth().background(C.card, RoundedCornerShape(14.dp)).border(1.dp, C.line, RoundedCornerShape(14.dp)).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp), content = content)
-
-@Composable
-private fun AccelRow(sel: AccelChoice, onPick: (AccelChoice) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Run on", fontSize = 13.sp, color = C.ink2)
-        AccelChoice.entries.forEach { a -> FilterChip(selected = sel == a, onClick = { onPick(a) }, label = { Text(a.label) }) }
-    }
-}
 
 @Composable
 private fun Toggle(label: String, on: Boolean, set: (Boolean) -> Unit) {

@@ -146,3 +146,27 @@ Newest at the bottom. Format: ID · date · decision · why.
     - **Val is not test-like.** Detector train/val are 93.5% ToL photos, test is 100% recent regional field photos. Genus accuracy holds (val 49.5% → test 49.1%), localisation drops (class-agnostic AP50 0.744 → 0.685). Epoch selection used all of val, unlike D-024's regional-val rule; with a monotone curve it made no difference here, but future detector selection should report the regional slice.
     - **The whole-photo readout beats the best box** for genus (56.2% vs 49.1% top-1), so the live label should come from it (app prototype, 2026-11-23).
   - **PTQ (2026-11-23, 512 val photos, 256 calibration photos, x86 LiteRT):** full INT8 is 9.9 MB (FP32 34 MB). Histogram observer: AP50 0.557 → 0.541 (−1.6 pt), class-agnostic AP50 −0.7 pt, genus top-1 46.1% → 43.2% (−2.9 pt), family −2.7 pt, logit cosine 0.994. Min/max ranges are worse (genus −3.9 pt), the opposite of BioCLIP's D-031. FP32 LiteRT is exact. The genus loss justifies QAT (D-011); the export does not yet include the whole-photo genus output.
+- **D-034 · 2026-11-23 · Android prototype 0.1: first app build, and the app's detector graph.**
+  - **Design first:** the user reviewed a clickable screen mock (claude.ai artifact, built from a real test photo, the trained models' outputs on it and NC State trait text, quoted as written). The flow is setup → live scanner → capture or gallery → top 5 → species page, plus a log and settings.
+  - **Live label = whole-frame genus** (D-033: 56.2% vs 49.1% test top-1). The detector export for the app (`export/detector_app.py`) emits whole-frame genus logits, per-anchor objectness and boxes instead of SSD's 3,234 × 1,360 class logits. Objectness is `sigmoid(logsumexp(g) − bg)`, which equals 1 − P(background) to 1e-6. INT8 PTQ on 512 val photos: whole-frame genus top-1 49.4% → 50.0%, family 61.3% → 61.1%, class-agnostic AP50 −0.7 pt. The live label loses nothing under PTQ, unlike the box genus (−2.9 pt, D-033), so QAT is not needed for the prototype. 11.9 MB.
+  - **Caution (D-013):**
+    - A banner appears when any of the top 5 has a cited toxic or conditional row. It names the species and what its source says.
+    - Species without rows show "No trait data" (D-027).
+    - Toxicity comes from `species_traits.csv` only, never from `species.parquet`'s `is_toxic`, which disagrees with it (e.g. *Delphinium tricorne*: flag False, cited rows poisonous if eaten, high severity).
+    - No live caution yet; that is an open question for the user.
+  - **Stack:** Kotlin, Compose, CameraX 1.7, LiteRT 2.4 `CompiledModel` (GPU → CPU fallback; NPU after the phone tests), minSdk 29, arm64 only, AGP 9.5 / Gradle 9.9 / compileSdk 37.2.
+    - The toolchain is in user space under `/models/ml/android`, with no sudo. Accepting Google's SDK licence was approved by the user.
+    - The APK is debug-signed for sideloading.
+  - **Bundle (`export/bundle.py`, 708 MB):**
+    - detector app graph + sidecar
+    - BioCLIP W8A16 (D-032 GPU variant, 610 MB)
+    - production probe as float16 + T
+    - `catalog.json`: 4,411 species; cited trait rows for 872; 4,075 CC0 / CC BY thumbnails with credits
+    - SHA-256 manifest
+
+    It is served over plain HTTP on the home network by `scripts/serve_bundle.sh` (port 8765, this account), as the user chose. The app verifies every file's hash before use.
+  - **Verification without a phone:**
+    - JVM unit tests show the Kotlin preprocessing reproduces the Python inputs exactly: detector int8 input and BioCLIP float input, zero difference on the golden photo.
+    - Post-processing (softmax, anchor decode, NMS) and the species head match Python to < 1e-4 and 2e-3.
+    - The bundle download passes end to end against the server.
+  - **Not verified (needs the Pixel):** LiteRT on device (GPU compile of the ViT-H graph, latency, memory), CameraX, and the UI on a real screen.

@@ -1,0 +1,231 @@
+"""Live detector graph for the Android app (app prototype, 2026-11-23; D-033 follow-up).
+
+The training/export graph (detector_litert.Export) emits SSD's raw layout: (1, A, G + 1) class logits with
+each location's genus logits repeated over its 6 anchors, 4.4M values per frame at 1,359 genera. The app
+needs far less, so this graph emits:
+  image_logits  (1, G)     whole-frame genus logits (pooled stride-32 features -> the shared classifier).
+                           The live label: 56.2% test top-1 against 49.1% for the best box (D-033).
+  objectness    (1, A)     1 - P(background) per anchor = sigmoid(logsumexp_g(genus logits) - bg logit),
+                           identical to softmax over [bg, genera] but computed per location, not per anchor.
+  boxes         (1, A, 4)  SSD box regression; the app decodes against the anchors in the sidecar
+                           (torchvision BoxCoder, weights 10, 10, 5, 5) and runs one class-agnostic NMS.
+Input as in detector_litert: normalised (1, 3, 320, 320) NCHW; full INT8 has int8 input, so the app quantises
+pixels with a per-channel lookup table built from the sidecar's mean, std, scale and zero point.
+
+Writes artifacts/detector/<name>/detector_app_<tag>.tflite and detector_app_<tag>.json (the sidecar: I/O
+names, dtypes and quantisation, anchors, box coder, genera/families, and this script's own check), and a row
+to results/tables/export_check.csv. Runs in the CPU export venv:
+  cd /tmp && PYTHONPATH=~/Transferner/src ~/Transferner/.venv-export/bin/python -m transferner.export.detector_app"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import time
+
+import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader
+from torchvision.ops import nms
+
+from ..eval.metrics import coco_map
+from ..train.train_detector import BoxSet, Net, anchors_for, build, collate, load_items
+from ..utils.config import data_root, load
+from .litert import mem_guard, peak_rss_gb, static_quantizer, write
+
+OUTPUTS = ("image_logits", "objectness", "boxes")
+
+
+class AppExport(nn.Module):
+    def __init__(self, ssd):
+        super().__init__()
+        self.backbone, self.head = ssd.backbone, ssd.head
+        assert getattr(self.head, "image_embed", None) is not None, "needs a shared head trained with --aux-image"
+
+    def forward(self, x):
+        feats = list(self.backbone(x).values())
+        h = self.head
+        obj = []
+        for f, bg, em in zip(feats, h.bg, h.embed):
+            b = bg(f)                                                    # (B, a, H, W) background logits
+            g = h.genus(em(f))                                           # (B, G, H, W) genus logits per location
+            o = torch.sigmoid(torch.logsumexp(g, dim=1, keepdim=True) - b)
+            obj.append(o.permute(0, 2, 3, 1).reshape(x.shape[0], -1))   # anchor order = SSD's (location, shape)
+        image_logits = h.genus(h.image_embed(feats[1])).flatten(1)
+        return image_logits, torch.cat(obj, 1), h.regression_head(feats)
+
+
+def score(run, loader, box_coder, anchors0, size, family_of, mean, std, keep=100, iou=0.55) -> dict:
+    """run(x) -> (image_logits, objectness, boxes) for a normalised batch: whole-frame genus/family top-k
+    and class-agnostic box AP, the two things the app shows."""
+    fam_t = torch.as_tensor(family_of)
+    n_fam = int(family_of.max()) + 1
+    top1 = top5 = fam1 = n = 0
+    det = {k: [] for k in ("img", "score", "box")}
+    gt = {k: [] for k in ("img", "box")}
+    for imgs, boxes, labels, genus in loader:
+        x = ((imgs.float() / 255) - mean) / std
+        il, ob, bx = run(x)
+        y = genus - 1
+        p = il.float().softmax(-1)
+        top1 += int((p.argmax(1) == y).sum())
+        top5 += int((p.topk(5, 1).indices == y[:, None]).any(1).sum())
+        fam1 += int((torch.zeros(len(y), n_fam).index_add_(1, fam_t, p).argmax(1) == fam_t[y]).sum())
+        B, A = ob.shape
+        dec = box_coder.decode_single(bx.float().reshape(-1, 4), anchors0.repeat(B, 1)).reshape(B, A, 4).clamp(0, size)
+        for i in range(B):
+            s, a = ob[i].float().topk(300)
+            k = nms(dec[i, a], s, iou)[:keep]
+            det["img"].append(np.full(len(k), n + i)); det["score"].append(s[k].numpy()); det["box"].append(dec[i, a[k]].numpy())
+            gt["img"].append(np.full(len(boxes[i]), n + i)); gt["box"].append(boxes[i].numpy())
+        n += B
+    det = {k: np.concatenate(v) for k, v in det.items()}
+    gt = {k: np.concatenate(v) for k, v in gt.items()}
+    m = coco_map(det["img"], np.zeros(len(det["img"]), int), det["score"], det["box"],
+                 gt["img"], np.zeros(len(gt["img"]), int), gt["box"])
+    return {"agnostic_ap50": m["ap50"], "agnostic_map": m["map"], "image_genus_top1": top1 / n,
+            "image_genus_top5": top5 / n, "image_family_top1": fam1 / n, "n_images": n}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--name", default="mnv4_shared")
+    ap.add_argument("--ckpt", default="best.pt")
+    ap.add_argument("--boxes", default="manifests/boxes.parquet")
+    ap.add_argument("--recipe", choices=["fp32", "int8"], default="int8")
+    ap.add_argument("--act-observer", choices=["histogram", "minmax"], default="histogram")
+    ap.add_argument("--images", type=int, default=512)
+    ap.add_argument("--split", default="val")
+    ap.add_argument("--calib", type=int, default=256)
+    ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--min-free-gb", type=float, default=8.0)
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args()
+    mem_guard(args.min_free_gb)
+    torch.set_num_threads(args.threads)
+    torch.manual_seed(args.seed)
+    root, cfg = data_root(), load("detector")
+    size = cfg["model"]["input"]
+    d = root / "artifacts/detector" / args.name
+    labels = json.loads((d / "labels.json").read_text())
+    ck = torch.load(d / args.ckpt, map_location="cpu")
+    model = build(len(labels["genera"]), cfg["model"]["backbone"], size, pretrained=False,
+                  head=ck["args"].get("head", "ssdlite"), image_aux=ck["args"].get("aux_image", 0) > 0)
+    model.load_state_dict(ck["model"])
+    model.eval()
+    genera, family_of, families, splits = load_items(root, args.boxes, ck["args"].get("fallback", "keep"), 0, args.seed)
+    assert genera == labels["genera"]
+    rng = np.random.default_rng(args.seed)
+    pick = lambda items, n: [items[i] for i in sorted(rng.permutation(len(items))[:n])]
+    check, calib = pick(splits[args.split], args.images), pick(splits["train"], args.calib)
+    mean = torch.tensor(model.backbone.mean).view(1, 3, 1, 1)
+    std = torch.tensor(model.backbone.std).view(1, 3, 1, 1)
+    loader = lambda items, bs: list(DataLoader(BoxSet(root, items, size, False), batch_size=bs, num_workers=4,
+                                               collate_fn=collate))
+    dl = loader(check, 16)                     # materialised before LiteRT/JAX is imported (see detector_litert)
+    cx = torch.cat([((imgs.float() / 255) - mean) / std for imgs, *_ in loader(calib, 32)])
+    anchors0 = anchors_for(model, size, "cpu")
+    run_score = lambda run: score(run, dl, model.box_coder, anchors0, size, family_of, mean, std)
+
+    exp = AppExport(model).eval()
+    with torch.no_grad():                      # the app graph must equal the training graph's postprocessing
+        x = cx[:4]
+        il, ob, bx = exp(x)
+        ref = Net(model)(x)
+        ref_obj = 1 - ref["cls_logits"].float().softmax(-1)[..., 0]
+        err = float((ob - ref_obj).abs().max())
+        assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref["image_logits"]), err
+        print(f"app graph == training graph (objectness max err {err:.1e})", flush=True)
+        t0 = time.time()
+        fl = run_score(lambda x: exp(x))
+    print("float:", fl, f"({time.time() - t0:.0f} s)", flush=True)
+
+    tag = args.recipe + ("_minmax" if args.recipe == "int8" and args.act_observer == "minmax" else "")
+    row = {"recipe": f"detector_{args.name}_app_{tag}", "torch": torch.__version__, "images": args.images,
+           "split": args.split, "threads": args.threads, "epoch": ck["epoch"],
+           **{f"float_{k}": round(v, 4) for k, v in fl.items() if k != "n_images"}}
+    sample = cx[:1]
+    quantizer = None
+    if args.recipe == "int8":
+        from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
+        quantizer = static_quantizer(False, args.act_observer)
+        m = prepare_pt2e(torch.export.export(exp, (sample,)).module(), quantizer)
+        with torch.no_grad():
+            for i in range(len(cx)):
+                m(cx[i:i + 1])
+        m = convert_pt2e(m, fold_quantize=False)
+        row.update(calib=args.calib, act_observer=args.act_observer)
+    else:
+        m = exp
+
+    import litert_torch
+    from litert_torch.quantize.quant_config import QuantConfig
+    path = d / f"detector_app_{tag}.tflite"
+    t = time.time()
+    litert_torch.convert(m, (sample,), quant_config=QuantConfig(pt2e_quantizer=quantizer) if quantizer else None).export(str(path))
+    row.update(convert_s=round(time.time() - t), file_mb=round(path.stat().st_size / 2**20, 2))
+
+    from ai_edge_litert.interpreter import Interpreter
+    it = Interpreter(model_path=str(path), num_threads=args.threads)
+    it.allocate_tensors()
+    sig = it.get_signature_list()
+    key = next(iter(sig))
+    runner = it.get_signature_runner(key)
+    ins, outs = runner.get_input_details(), runner.get_output_details()
+    assert len(ins) == 1 and len(outs) == 3, (ins.keys(), outs.keys())
+    in_name, ind = next(iter(ins.items()))
+    G, A = len(genera), len(anchors0)
+    by_shape = {(1, G): "image_logits", (1, A): "objectness", (1, A, 4): "boxes"}
+    out_names = {by_shape[tuple(int(s) for s in o["shape"])]: n for n, o in outs.items()}
+    assert set(out_names) == set(OUTPUTS), out_names
+    q = lambda det: {"dtype": np.dtype(det["dtype"]).name, "shape": [int(s) for s in det["shape"]],
+                     "scale": float(det["quantization"][0]), "zero_point": int(det["quantization"][1])}
+    times = []
+
+    def tfl(x):
+        res = {k: [] for k in OUTPUTS}
+        for i in range(len(x)):
+            v = x[i:i + 1].numpy()
+            if np.issubdtype(ind["dtype"], np.integer):
+                s, z = ind["quantization"]
+                info = np.iinfo(ind["dtype"])
+                v = np.clip(np.round(v / s) + z, info.min, info.max)
+            t1 = time.perf_counter()
+            o = runner(**{in_name: v.astype(ind["dtype"])})
+            times.append(time.perf_counter() - t1)
+            for k in OUTPUTS:
+                det = outs[out_names[k]]
+                a = o[out_names[k]].astype(np.float32)
+                if np.issubdtype(det["dtype"], np.integer):
+                    a = (a - det["quantization"][1]) * det["quantization"][0]
+                res[k].append(torch.from_numpy(a))
+        return tuple(torch.cat(res[k]) for k in OUTPUTS)
+
+    got = run_score(tfl)
+    print("litert:", got, flush=True)
+    row.update(status="ok", x86_ms_median=round(1000 * float(np.median(times[1:])), 1), peak_rss_gb=round(peak_rss_gb(), 1),
+               **{f"q_{k}": round(v, 4) for k, v in got.items() if k != "n_images"},
+               **{f"delta_{k}": round(got[k] - fl[k], 4) for k in ("agnostic_ap50", "image_genus_top1", "image_family_top1")})
+    write(row)
+
+    side = {
+        "format": 1, "model": path.name, "signature": key, "size": size, "layout": "NCHW",
+        "mean": [float(v) for v in model.backbone.mean], "std": [float(v) for v in model.backbone.std],
+        "resize": "squash to size x size, bilinear (training used torchvision Resize((s, s)), antialias)",
+        "input": {"name": in_name, **q(ind)},
+        "outputs": {k: {"name": out_names[k], **q(outs[out_names[k]])} for k in OUTPUTS},
+        "box_coder": {"weights": [float(w) for w in model.box_coder.weights], "clip": math.log(1000.0 / 16),
+                      "anchors": "xyxy pixels at size"},
+        "anchors": [[round(float(v), 3) for v in a] for a in anchors0],
+        "postprocess": {"objectness_topk": 300, "nms_iou": 0.55, "max_boxes": 100},
+        "genera": genera, "families": families, "family_of": [int(v) for v in family_of],
+        "check": {"split": args.split, "images": args.images, "float": fl, "litert": got,
+                  "checkpoint": f"{args.name}/{args.ckpt}", "epoch": int(ck["epoch"])},
+    }
+    (d / f"detector_app_{tag}.json").write_text(json.dumps(side))
+    print(f"wrote {path} and its sidecar", flush=True)
+
+
+if __name__ == "__main__":
+    main()

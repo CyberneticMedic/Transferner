@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Prototype: the model bundle comes from a server on the home network over plain HTTP. Every file is
+     checked against the bundle's SHA-256 manifest before use (BundleRepository). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

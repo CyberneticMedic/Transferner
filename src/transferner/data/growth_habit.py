@@ -1,23 +1,31 @@
 """Growth habit per species from USDA PLANTS (D-005 source; D-037 focus chip).
 
 For every label-set species: PlantSearch?searchText=<name> -> the USDA symbol of the exact name (else of a
-GBIF synonym from species.parquet), then PlantProfile?symbol=<symbol> (following AcceptedId when the name is a
-USDA synonym) -> GrowthHabits (Tree, Shrub, Subshrub, Vine, Forb/herb, Graminoid, Nonvascular, Lichenous),
-Durations and the USDA common name. USDA PLANTS data are public domain; plantsservices has no robots.txt.
-1 request/s (project rule), every response cached under $TRANSFERNER_DATA/cache/http, so re-runs are free.
+GBIF synonym from species.parquet that synonym_guard accepts), then PlantProfile?symbol=<symbol> (following
+AcceptedId when the name is a USDA synonym) -> GrowthHabits (Tree, Shrub, Subshrub, Vine, Forb/herb, Graminoid,
+Nonvascular, Lichenous), Durations and the USDA common name. USDA PLANTS data are public domain; plantsservices
+has no robots.txt. 1 request/s (project rule), every response cached under $TRANSFERNER_DATA/cache/http, so re-runs
+are free; `accessed` is the date that cached response was fetched.
 Writes data/traits/growth_habit.csv (cited: one USDA profile URL per row).
-  python -m transferner.data.growth_habit [--limit N]"""
+  python -m transferner.data.growth_habit [--limit N]
+
+Synonym matches (audit 2026-11-24, data_domain-02): a synonym that is another label species' accepted name is
+never used (Trautvetteria took goldenseal's habit, Nidorella ivifolia Baccharis halimifolia's, Helianthus
+laetiflorus H. atrorubens'), nor one GBIF's strict match resolves to another ACCEPTED species, unless USDA's own
+record confirms the label species (usda_confirms)."""
 from __future__ import annotations
 
 import argparse
 import re
 import time
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from ..utils.config import data_root
 from ..utils.http import _cache_path, get_json
+from .synonym_guard import SynonymGuard, norm_author, synonym_authorships
 
 API = "https://plantsservices.sc.egov.usda.gov/api/"
 PROFILE_URL = "https://plants.usda.gov/plant-profile/{symbol}"
@@ -58,6 +66,24 @@ def profile(symbol: str):
     return p, False
 
 
+def usda_confirms(rec: dict, prof: dict, label_key: int, label_name: str, synonym: str) -> bool:
+    """USDA's own record says it is the label species, which outranks GBIF's strict match of the bare name: its
+    accepted name is the label species (Narcissus biflorus -> N. ×medioluteus), or the name USDA matched has
+    the authorship of the label's own GBIF synonym record (Draba brachycarpa Nutt. ex Torr. & A. Gray under
+    Abdra brachycarpa), so it is that synonym and not the homonym GBIF's strict match returns."""
+    acc = plain((prof or {}).get("ScientificName", "")).replace("×", " ").split()
+    if " ".join(acc[:2]).lower() == label_name.lower():
+        return True
+    author = re.sub(r"<i>.*?</i>", " ", rec.get("ScientificName", "") or "")
+    return bool(author.strip()) and norm_author(author) in synonym_authorships(label_key, synonym)
+
+
+def accessed(url: str) -> str:
+    """Date the cached response was fetched (the citation's access date), today if it is not cached."""
+    p = _cache_path(url, None)
+    return date.fromtimestamp(p.stat().st_mtime).isoformat() if p.exists() else time.strftime("%Y-%m-%d")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
@@ -67,6 +93,7 @@ def main() -> None:
     sp = pd.read_parquet(root / "manifests/species.parquet").sort_values("class_idx")
     if args.limit:
         sp = sp.head(args.limit)
+    guard = SynonymGuard(sp)
     rows, t0 = [], time.time()
     for k, r in enumerate(sp.itertuples()):
         hit, via = lookup(r.scientific_name), "name"
@@ -74,18 +101,25 @@ def main() -> None:
             syns = r.synonyms if r.synonyms is not None else []
             for s in list(syns)[:5]:
                 s2 = " ".join(str(s).split()[:2])
-                if s2.lower() != r.scientific_name.lower() and (hit := lookup(s2)) is not None:
-                    via = f"synonym {s2}"
-                    break
+                if s2.lower() == r.scientific_name.lower() or (h := lookup(s2)) is None:
+                    continue
+                p, _ = profile(h["Symbol"])
+                if guard.reject(r.gbif_taxon_key, r.scientific_name, s2,
+                                source_confirms=usda_confirms(h, p, r.gbif_taxon_key, r.scientific_name, s2)):
+                    continue
+                hit, via = h, f"synonym {s2}"
+                break
         row = {"scientific_name": r.scientific_name, "class_idx": int(r.class_idx), "usda_symbol": "", "match": "none",
                "growth_habits": "", "durations": "", "usda_common_name": "", "source_url": "",
-               "accessed": time.strftime("%Y-%m-%d")}
+               "accessed": accessed(API + "PlantSearch?searchText=" + r.scientific_name.replace(" ", "%20"))}
         if hit is not None:
             p, followed = profile(hit["Symbol"])
             if p:
+                url = API + (f"PlantProfile/{p['Id']}" if followed else "PlantProfile?symbol=" + hit["Symbol"])
                 row.update(usda_symbol=p.get("Symbol", ""), match=via + (" -> accepted" if followed else ""),
                            growth_habits=";".join(p.get("GrowthHabits") or []), durations=";".join(p.get("Durations") or []),
-                           usda_common_name=p.get("CommonName") or "", source_url=PROFILE_URL.format(symbol=p.get("Symbol", "")))
+                           usda_common_name=p.get("CommonName") or "", source_url=PROFILE_URL.format(symbol=p.get("Symbol", "")),
+                           accessed=accessed(url))
         rows.append(row)
         if k % 200 == 0:
             got = sum(1 for x in rows if x["growth_habits"])
@@ -93,6 +127,8 @@ def main() -> None:
     df = pd.DataFrame(rows)
     out = Path(__file__).resolve().parents[3] / args.out
     df.to_csv(out, index=False)
+    rej = pd.DataFrame(guard.log, columns=["gbif_taxon_key", "scientific_name", "synonym", "reason"])
+    print(f"USDA synonym matches rejected: {len(rej)}\n{rej.to_string(index=False)}", flush=True)
     print(f"wrote {out}: {len(df)} species, {(df.growth_habits != '').sum()} with growth habit; matches "
           f"{df.match.str.split(' ').str[0].value_counts().to_dict()}", flush=True)
 

@@ -107,6 +107,21 @@ fun SpeciesScreen(vm: AppViewModel) {
                                 Text("Severity is the source's rating (NC State: low, medium, high).", color = C.caution, fontSize = 12.sp)
                             }
                         }
+                        // genus union (audit capture_lookalike_resolution-3): toxic parts cited for congeners only
+                        t.congener?.let { cg ->
+                            Column(Modifier.fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(12.dp)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Glyph(R.drawable.ic_warning, null, C.caution)
+                                    Text(cg.line, color = C.caution, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Text("The source lists these parts as toxic for other species of the same genus. This species' own listing does not cover them, which does not mean they are safe. Treat them with the same care.",
+                                    color = C.caution, fontSize = 13.sp, lineHeight = 18.sp)
+                                cg.species.take(6).forEach { rs ->
+                                    Text("${rs.displayName} (${rs.name})", color = C.caution, fontSize = 13.sp,
+                                        textDecoration = TextDecoration.Underline, modifier = Modifier.clickable { vm.openSpecies(rs) })
+                                }
+                            }
+                        }
                         if (t.relative) {
                             Column(Modifier.fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(12.dp)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {

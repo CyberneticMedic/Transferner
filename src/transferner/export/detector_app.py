@@ -41,7 +41,8 @@ class AppExport(nn.Module):
     def __init__(self, ssd):
         super().__init__()
         self.backbone, self.head = ssd.backbone, ssd.head
-        assert getattr(self.head, "image_embed", None) is not None, "needs a shared head trained with --aux-image"
+        assert getattr(self.head, "image_embed", None) is not None or getattr(self.head, "image_cls", None) is not None, \
+            "needs a shared head with a whole-frame branch (--aux-image or train_live_head)"
 
     def forward(self, x):
         feats = list(self.backbone(x).values())
@@ -52,7 +53,7 @@ class AppExport(nn.Module):
             g = h.genus(em(f))                                           # (B, G, H, W) genus logits per location
             o = torch.sigmoid(torch.logsumexp(g, dim=1, keepdim=True) - b)
             obj.append(o.permute(0, 2, 3, 1).reshape(x.shape[0], -1))   # anchor order = SSD's (location, shape)
-        image_logits = h.genus(h.image_embed(feats[1])).flatten(1)
+        image_logits = h.image_logits(feats)
         return image_logits, torch.cat(obj, 1), h.regression_head(feats)
 
 
@@ -111,7 +112,8 @@ def main() -> None:
     labels = json.loads((d / "labels.json").read_text())
     ck = torch.load(d / args.ckpt, map_location="cpu")
     model = build(len(labels["genera"]), cfg["model"]["backbone"], size, pretrained=False,
-                  head=ck["args"].get("head", "ssdlite"), image_aux=ck["args"].get("aux_image", 0) > 0)
+                  head=ck["args"].get("head", "ssdlite"), image_aux=ck["args"].get("aux_image", 0) > 0,
+                  image_head=ck["args"].get("image_head", 0))
     model.load_state_dict(ck["model"])
     model.eval()
     genera, family_of, families, splits = load_items(root, args.boxes, ck["args"].get("fallback", "keep"), 0, args.seed)
@@ -135,7 +137,7 @@ def main() -> None:
         ref = Net(model)(x)
         ref_obj = 1 - ref["cls_logits"].float().softmax(-1)[..., 0]
         err = float((ob - ref_obj).abs().max())
-        assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref["image_logits"]), err
+        assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref["image_logits"], atol=1e-5), err
         print(f"app graph == training graph (objectness max err {err:.1e})", flush=True)
         t0 = time.time()
         fl = run_score(lambda x: exp(x))

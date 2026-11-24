@@ -95,7 +95,7 @@ class SharedGenusHead(nn.Module):
     by the 3:1 negatives."""
 
     def __init__(self, in_channels: list[int], num_anchors: list[int], n_genera: int, norm, embed: int = 256,
-                 image_aux: bool = False):
+                 image_aux: bool = False, image_head: int = 0):
         super().__init__()
         from torchvision.models.detection.ssdlite import SSDLiteRegressionHead
         from torchvision.ops.misc import Conv2dNormActivation
@@ -112,7 +112,13 @@ class SharedGenusHead(nn.Module):
         # SAME genus classifier, trained on the photo's genus. Every photo supervises the classifier every
         # step, and it is a cheap whole-frame genus readout (pool + 1x1), NPU-friendly.
         self.image_embed = nn.Sequential(nn.AdaptiveAvgPool2d(1), Conv2dNormActivation(
-            in_channels[1], embed, kernel_size=1, norm_layer=None, activation_layer=nn.ReLU6)) if image_aux else None
+            in_channels[1], embed, kernel_size=1, norm_layer=None, activation_layer=nn.ReLU6)) if image_aux and not image_head else None
+        # Dedicated whole-frame classifier (train_live_head.py, D-036): MobileNetV4's own classifier head
+        # (pool -> 1x1 960 -> image_head, BN, ReLU -> classifier), the live label of the app. Replaces the
+        # image branch above when set.
+        self.image_cls = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1), nn.Conv2d(in_channels[1], image_head, 1, bias=False), nn.BatchNorm2d(image_head),
+            nn.ReLU(inplace=True), nn.Dropout(0.2), nn.Conv2d(image_head, n_genera, 1)) if image_head else None
         _normal_init(self.bg)
         _normal_init(self.embed)
         nn.init.normal_(self.genus.weight, std=0.01)
@@ -130,18 +136,25 @@ class SharedGenusHead(nn.Module):
             g = g.permute(0, 2, 3, 1).reshape(B, H * W, 1, G).expand(B, H * W, a, G)
             logits.append(torch.cat([b, g], -1).reshape(B, H * W * a, G + 1))
         out = {"bbox_regression": self.regression_head(feats), "cls_logits": torch.cat(logits, 1)}
-        if self.image_embed is not None:
-            out["image_logits"] = self.genus(self.image_embed(feats[1])).flatten(1)     # (B, G)
+        if self.image_embed is not None or self.image_cls is not None:
+            out["image_logits"] = self.image_logits(feats)
         return out
+
+    def image_logits(self, feats: list[torch.Tensor]) -> torch.Tensor:
+        """(B, G) whole-frame genus logits from the stride-32 features."""
+        if self.image_cls is not None:
+            return self.image_cls(feats[1]).flatten(1)
+        return self.genus(self.image_embed(feats[1])).flatten(1)
 
 
 def build(n_genera: int, backbone: str, size: int, pretrained: bool = True, head: str = "ssdlite",
-          image_aux: bool = False) -> SSD:
+          image_aux: bool = False, image_head: int = 0) -> SSD:
     norm = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
     body = Backbone(backbone, pretrained, norm)
     anchors = DefaultBoxGenerator([[2, 3] for _ in range(6)], min_ratio=0.2, max_ratio=0.95)
     if head == "shared":
-        h = SharedGenusHead(body.out_channels, anchors.num_anchors_per_location(), n_genera, norm, image_aux=image_aux)
+        h = SharedGenusHead(body.out_channels, anchors.num_anchors_per_location(), n_genera, norm, image_aux=image_aux,
+                            image_head=image_head)
     else:
         h = SSDLiteHead(body.out_channels, anchors.num_anchors_per_location(), n_genera + 1, norm)
     return SSD(body, anchors, (size, size), n_genera + 1, image_mean=list(body.mean), image_std=list(body.std),
@@ -317,8 +330,22 @@ def motion_kernel(k: int, angle: float) -> torch.Tensor:
     return ker / ker.sum()
 
 
-def field_degrade(img: torch.Tensor, size: int) -> torch.Tensor:
-    """uint8 (3, S, S) -> walking-video artefacts: downscale-upscale, motion blur, JPEG."""
+def low_light(img: torch.Tensor) -> torch.Tensor:
+    """uint8 (3, S, S) -> a phone's low-light frame: the scene at 15-60% of the light, sensor noise, then the
+    auto-exposure gain back up (amplifying the noise), a slight warm or cool cast, and lifted blacks."""
+    f = float(torch.empty(()).uniform_(0.15, 0.6))
+    x = img.float() * f
+    x = x + torch.randn_like(x) * float(torch.empty(()).uniform_(1.0, 4.0))
+    x = x / f * float(torch.empty(()).uniform_(0.6, 1.0))
+    x = x * torch.empty(3, 1, 1).uniform_(0.9, 1.1) + float(torch.empty(()).uniform_(0, 12))
+    return x.round().clamp(0, 255).byte()
+
+
+def field_degrade(img: torch.Tensor, size: int, low_light_p: float = 0.0) -> torch.Tensor:
+    """uint8 (3, S, S) -> walking-video artefacts: low light (when low_light_p), downscale-upscale, motion
+    blur, JPEG."""
+    if low_light_p and torch.rand(()) < low_light_p:
+        img = low_light(img)
     if torch.rand(()) < 0.25:
         f = float(torch.empty(()).uniform_(0.3, 0.7))
         x = img[None].float()
@@ -334,8 +361,8 @@ def field_degrade(img: torch.Tensor, size: int) -> torch.Tensor:
 
 
 class BoxSet(Dataset):
-    def __init__(self, root, items: list, size: int, train: bool):
-        self.root, self.items, self.size, self.train = root, items, size, train
+    def __init__(self, root, items: list, size: int, train: bool, low_light_p: float = 0.0):
+        self.root, self.items, self.size, self.train, self.low_light_p = root, items, size, train, low_light_p
         if train:
             self.tf = v2.Compose([
                 v2.RandomPhotometricDistort(p=0.5),
@@ -360,7 +387,7 @@ class BoxSet(Dataset):
         img, tgt = self.tf(tv_tensors.Image(img), {"boxes": boxes, "labels": torch.as_tensor(lab)})
         img = img.as_subclass(torch.Tensor)
         if self.train:
-            img = field_degrade(img, self.size)
+            img = field_degrade(img, self.size, self.low_light_p)
         return img, tgt["boxes"].as_subclass(torch.Tensor).float(), tgt["labels"].long(), int(lab[0])
 
 

@@ -35,6 +35,18 @@ class SpeciesHead(private val meta: HeadMeta, weights: ByteArray) {
         return Detections.topK(p, k).map { Candidate(catalog.species[it], p[it]) }
     }
 
+    /** Top [k] plus, outside them, cited-toxic or relative species with p >= [minP] (D-038), most likely first. */
+    fun topWithFlags(embedding: FloatArray, catalog: Catalog, index: WarningIndex, k: Int = 5,
+                     minP: Float = WarningIndex.CAPTURE_MIN_P, maxExtra: Int = 3): Pair<List<Candidate>, List<Candidate>> {
+        val p = probs(embedding)
+        val top = Detections.topK(p, k)
+        val inTop = top.toSet()
+        val extra = p.indices.filter { it !in inTop && p[it] >= minP }
+            .filter { TraitSummary.of(catalog.species[it], index).let { t -> t.toxic || t.relative } }
+            .sortedByDescending { p[it] }.take(maxExtra)
+        return top.map { Candidate(catalog.species[it], p[it]) } to extra.map { Candidate(catalog.species[it], p[it]) }
+    }
+
     companion object {
         /** IEEE 754 binary16 -> binary32 (no android.util.Half, so it also runs in JVM unit tests). */
         fun halfToFloat(h: Short): Float {

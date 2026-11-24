@@ -16,7 +16,11 @@ data class LiveResult(
     val boxes: List<Box>,                       // in model input pixels (size x size, squashed frame)
     val size: Int,
     val bestScore: Float = 0f,                  // highest objectness this frame, shown or not (diagnostics)
+    val warnings: List<LiveWarning> = emptyList(),
 )
+
+/** A live guess whose genus holds a cited toxic species (D-038); serious = moderate/high or contact. */
+data class LiveWarning(val genus: String, val p: Float, val serious: Boolean)
 
 object Detections {
     fun softmax(x: FloatArray): FloatArray {

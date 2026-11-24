@@ -71,7 +71,9 @@ fun Thumb(vm: AppViewModel, s: Species, size: Int) {
 fun ResultScreen(vm: AppViewModel) {
     val r by vm.result.collectAsState()
     val res = r ?: return
-    val caution = cautionCandidates(res.top)
+    val idx = vm.warnIndex
+    val caution = cautionCandidates(res.top, idx)
+    val extra = cautionCandidates(res.alsoPossible, idx)
     var note by remember(res) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(C.paper).safeDrawingPadding()) {
         TopBar(if (res.fromLog) "Saved match" else "Species match", R.drawable.ic_back, { vm.back() })
@@ -91,16 +93,23 @@ fun ResultScreen(vm: AppViewModel) {
                         color = C.none, fontSize = 13.sp, lineHeight = 18.sp)
                 }
             }
-            if (caution.isNotEmpty()) item {
+            if (caution.isNotEmpty() || extra.isNotEmpty()) item {
                 Row(
                     Modifier.padding(top = 12.dp).fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Glyph(R.drawable.ic_warning, null, C.caution)
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(cautionHeadline(caution), color = C.caution, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text(cautionHeadline(caution + extra), color = C.caution, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         caution.forEach { (c, t) ->
                             Text("${c.species.displayName} (${pct(c.p)}): ${t.detail}.", color = C.caution, fontSize = 13.sp, lineHeight = 18.sp)
+                        }
+                        if (extra.isNotEmpty()) {
+                            Text("Also possible, outside the top 5:", color = C.caution, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            extra.forEach { (c, t) ->
+                                Text("${c.species.displayName} (${pct(c.p)}): ${t.detail}.", color = C.caution, fontSize = 13.sp, lineHeight = 18.sp,
+                                    modifier = Modifier.clickable { vm.openSpecies(c.species) })
+                            }
                         }
                         Text("Compare closely before you handle or eat anything.", color = C.caution, fontSize = 13.sp, lineHeight = 18.sp)
                     }
@@ -135,7 +144,7 @@ fun ResultScreen(vm: AppViewModel) {
 
 @Composable
 private fun CandidateRow(vm: AppViewModel, c: Candidate) {
-    val t = TraitSummary.of(c.species)
+    val t = TraitSummary.of(c.species, vm.warnIndex)
     Row(
         Modifier.fillMaxWidth().clickable { vm.openSpecies(c.species) }.padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,

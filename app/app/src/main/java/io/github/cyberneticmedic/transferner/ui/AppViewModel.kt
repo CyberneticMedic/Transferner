@@ -63,6 +63,7 @@ data class IdResult(
     val photo: Bitmap,
     val jpeg: ByteArray,
     val top: List<Candidate>,
+    val alsoPossible: List<Candidate> = emptyList(),   // flagged species outside the top 5 (D-038)
     val modelMs: Float,
     val totalMs: Float,
     val fromLog: Boolean = false,
@@ -226,6 +227,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------------------------------- models
+    /** Cited toxic species per genus (D-038), for relatives at capture and the live warning row. */
+    @Volatile var warnIndex: io.github.cyberneticmedic.transferner.core.WarningIndex? = null
+        private set
+
+    private fun genusWarn(files: BundleFiles): IntArray {
+        val idx = warnIndex ?: io.github.cyberneticmedic.transferner.core.WarningIndex(files.catalog).also { warnIndex = it }
+        return IntArray(files.detector.genera.size) { g ->
+            val n = files.detector.genera[g]
+            if (idx.genusSerious(n)) 2 else if (idx.genusToxic(n)) 1 else 0
+        }
+    }
+
     fun loadModels(files: BundleFiles) {
         val p = plan.value ?: DevicePlanner.plan(device.value ?: DeviceProfile.read(getApplication(), null), files.speciesModels.variants).also { setPlan(it) }
         models.value = ModelStatus(detector = "loading…", species = "loading…")
@@ -273,6 +286,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefs.pending = null
             }
             focus.value?.let { id -> d.focusBias = files.focus?.bias(id, files.detector.genera.size) }
+            d.genusWarn = genusWarn(files)
             detector = d
             models.value = models.value.copy(detector = "${d.accelerator} · loaded in ${d.loadMs} ms" +
                 (if (prefs.detectorBench.isNotBlank()) " · measured ${prefs.detectorBench}" else ""), detectorReady = true)
@@ -426,12 +440,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val pixels = IntArray(bmp.width * bmp.height)
                     bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
                     prefs.pending = "species:run"
-                    val (top, t) = try { identifier!!.identify(pixels, bmp.width, bmp.height) } finally { prefs.pending = null }
+                    val (top, extra, t) = try { identifier!!.identify(pixels, bmp.width, bmp.height) } finally { prefs.pending = null }
                     lastIdMs = t.modelMs
                     val shown = scaled(bmp, 1080)
                     val out = ByteArrayOutputStream()
                     shown.compress(Bitmap.CompressFormat.JPEG, 88, out)
-                    IdResult(shown, out.toByteArray(), top, t.modelMs, (System.nanoTime() - t0) / 1e6f)
+                    IdResult(shown, out.toByteArray(), top, extra, t.modelMs, (System.nanoTime() - t0) / 1e6f)
                 }
                 result.value = r
                 go(Screen.RESULT)
@@ -455,7 +469,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val r = result.value ?: return
         val files = (bundle.value as? BundleState.Ready)?.files ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            log.add(r.jpeg, r.top, cautionCandidates(r.top).isNotEmpty(), files.manifest.version, files.species.variant,
+            log.add(r.jpeg, r.top, cautionCandidates(r.top + r.alsoPossible, warnIndex).isNotEmpty(), files.manifest.version, files.species.variant,
                 files.detector.model, note)
             result.value = r.copy(saved = true)
             message.value = "Saved to the log."
@@ -501,7 +515,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val r = withContext(Dispatchers.IO) {
                 val bytes = e.photo.readBytes()
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                IdResult(bmp, bytes, e.top, 0f, 0f, fromLog = true, saved = true)
+                IdResult(bmp, bytes, e.top, emptyList(), 0f, 0f, fromLog = true, saved = true)
             }
             result.value = r
             go(Screen.RESULT)

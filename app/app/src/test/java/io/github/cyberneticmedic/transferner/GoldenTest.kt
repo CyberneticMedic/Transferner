@@ -135,6 +135,18 @@ class GoldenTest {
         assertTrue(!chip("Ficus carica").serious && !chip("Morus alba").serious)
         assertEquals("Toxic to touch and eat · high", chip("Toxicodendron radicans").chip)
         assertEquals("Poisonous if eaten · high", chip("Delphinium tricorne").chip)
+        // D-038 warning flags: a species without rows whose genus has a cited toxic species is a "relative"
+        val idx = io.github.cyberneticmedic.transferner.core.WarningIndex(catalog)
+        val relSp = catalog.species.first { it.traits.isEmpty() && idx.genusSerious(it.genus) }
+        val rel = TraitSummary.of(relSp, idx)
+        println("${relSp.name}: ${rel.chip} | ${rel.detail}")
+        println("relatives in the catalog: " + catalog.species.count { it.traits.isEmpty() && idx.genusToxic(it.genus) })
+        assertTrue(rel.relative && rel.needsCaution && rel.relativeSerious)
+        assertTrue(idx.genusSerious("Toxicodendron") && idx.genusToxic("Morus") && !idx.genusSerious("Morus"))
+        assertTrue(!TraitSummary.of(catalog.species.first { it.name == "Cardamine dissecta" }, idx).relative)
+        val (t5, extra) = head.topWithFlags(floats("species_embedding.f32"), catalog, idx)
+        assertEquals(top.map { it.species.i }, t5.map { it.species.i })
+        println("also possible beyond the top 5: " + extra.joinToString { "${it.species.name} %.4f".format(it.p) })
     }
 
     @Test fun halfFloat() {

@@ -239,3 +239,15 @@ Newest at the bottom. Format: ID · date · decision · why.
     - The remaining misses are scattered (at most 5 photos per toxic → non-toxic pair on val). Many are a toxic species confused with a congener that has no trait rows: *Solanum carolinense* → *S. dimidiatum*, *Asarum naniflorum* → *Hexastylis contracta*, *Caulophyllum*, *Trillium*, *Allium*. There is no cluster for a specialist to target.
     - Revisit with field logs.
   - **Open for the user: a congener caution.** Flagging candidates with no trait rows whose genus has a cited toxic member (230 species) cuts caution misses by a quarter (val 0.44% → 0.33%, test 0.70% → 0.53%). The cost: the banner then shows on 34% / 31% of non-toxic photos instead of 27% / 23%.
+- **D-038 · 2026-11-24 · Warning flags, false positives over false negatives (user); live budget 200 ms on the Moto.**
+  - **User:** "add warning flags. FP over FN". This settles D-037's open congener question in favour of more warnings. Rules measured on regional photos (`eval/warning_flags.py` → `results/tables/warning_flags.csv`). A miss is a toxic-species photo with no flag; a false alarm is a flag on a non-toxic photo.
+  - **Capture (species model):**
+    - The banner now fires on any cited toxic species, or any "relative", with probability ≥ 0.5% anywhere among the 4,411, not only in the top 5. A relative is a species with no trait rows of its own whose genus has a cited toxic species (230 species).
+    - Misses fall from 0.44% to 0.17% on val and from 0.70% to 0.18% on test (serious only: 0.56% → 0.22%, 0.73% → 0.16%). False alarms rise from 27% to 36% and from 23% to 33%.
+    - Flagged species outside the top 5 are listed as "also possible".
+    - Relatives read "Relative of a poisonous / mildly toxic species", naming the cited congeners. They are never called toxic themselves.
+  - **Live:**
+    - A warning row appears when any whole-frame guess with probability ≥ 2% is a genus holding a cited toxic species. It reads "Possibly poisonous" if any such species is moderate/high or contact-toxic, else "Possibly mildly toxic", followed by "capture to check".
+    - On `mnv4_shared`, regional val: misses 5.5%, false alarms 37% (test 5.6%, 35%). 206 of the detector's 1,359 genera hold a cited toxic species (140 serious).
+    - Re-measure on the retrained live model.
+  - **Latency:** the user allows up to 200 ms per live frame on the Moto G Power 2025 for a better accuracy trade-off. Next live model: `mnv4_live` fine-tuned at 448 px (`train_live_head --size 448`, about 2× the 320 px compute). The training photos are stored at about 480 px, so 448 is the useful ceiling. Measured Moto timings come from the app's device report (0.4+).

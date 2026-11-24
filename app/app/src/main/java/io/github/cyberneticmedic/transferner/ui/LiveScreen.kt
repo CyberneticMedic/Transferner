@@ -237,6 +237,19 @@ fun LiveScreen(vm: AppViewModel) {
             // is right 62% of the time this way, against 56% for always showing the genus)
             val top = f?.result?.genera?.firstOrNull()
             val sure = top != null && top.p >= 0.5f
+            // Live warning flags (D-038): any live guess whose genus holds a cited toxic species, from 2%;
+            // false positives preferred. The check is the capture; this is a heads-up.
+            val warn = f?.result?.warnings.orEmpty()
+            if (warn.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Glyph(R.drawable.ic_warning, null, C.caution, 18)
+                    Text(
+                        (if (warn.any { it.serious }) "Possibly poisonous: " else "Possibly mildly toxic: ") +
+                            warn.take(3).joinToString(", ") { "${it.genus} ${pct(it.p)}" } + " · capture to check",
+                        color = C.caution, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 17.sp)
+                }
+            }
             val focusLabel = focusMeta?.categories?.firstOrNull { it.id == focus }?.label?.lowercase()
             SectionLabelDark((if (top == null || sure) "Live guess · whole frame" else "Live guess · family (genus unsure)") +
                 (focusLabel?.let { " · focus $it" } ?: ""))

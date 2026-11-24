@@ -55,7 +55,7 @@ fun SpeciesScreen(vm: AppViewModel) {
     val res by vm.result.collectAsState()
     val here = res?.top?.firstOrNull { it.species.i == s.i }
     val others = res?.top?.filter { it.species.i != s.i }.orEmpty()
-    val t = TraitSummary.of(s)
+    val t = TraitSummary.of(s, vm.warnIndex)
     var tab by remember(s.i) { mutableIntStateOf(0) }
     val ctx = LocalContext.current
     val uri = LocalUriHandler.current
@@ -107,7 +107,20 @@ fun SpeciesScreen(vm: AppViewModel) {
                                 Text("Severity is the source's rating (NC State: low, medium, high).", color = C.caution, fontSize = 12.sp)
                             }
                         }
-                        if (!t.hasData) Note("No trait data", "No cited source in this bundle covers this species. That does not mean it is safe.")
+                        if (t.relative) {
+                            Column(Modifier.fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(12.dp)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Glyph(R.drawable.ic_warning, null, C.caution)
+                                    Text(t.chip, color = C.caution, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Text("No cited source covers this species, but these species of the same genus are listed as toxic. Treat it with the same care until you know more.",
+                                    color = C.caution, fontSize = 13.sp, lineHeight = 18.sp)
+                                t.relatives.take(6).forEach { (rs, rt) ->
+                                    Text("${rs.displayName} (${rs.name}): ${rt.chip.lowercase()}", color = C.caution, fontSize = 13.sp,
+                                        textDecoration = TextDecoration.Underline, modifier = Modifier.clickable { vm.openSpecies(rs) })
+                                }
+                            }
+                        } else if (!t.hasData) Note("No trait data", "No cited source in this bundle covers this species. That does not mean it is safe.")
                         s.traits.groupBy { Triple(it.category, it.conditions, it.symptoms) }.forEach { (_, rows) -> TraitCard(rows) }
                         val listed = s.traits.map { it.part }.toSet()
                         val missing = ALL_PARTS.filter { it !in listed }
@@ -128,7 +141,7 @@ fun SpeciesScreen(vm: AppViewModel) {
                     1 -> {
                         if (others.isEmpty()) Text("Open this page from a match to compare the other candidates.", color = C.muted, fontSize = 14.sp)
                         others.forEach { c ->
-                            val ct = TraitSummary.of(c.species)
+                            val ct = TraitSummary.of(c.species, vm.warnIndex)
                             Row(
                                 Modifier.fillMaxWidth().background(if (ct.needsCaution) C.cautionSoft else C.card, RoundedCornerShape(12.dp))
                                     .border(1.dp, if (ct.needsCaution) C.cautionSoft else C.line, RoundedCornerShape(12.dp))

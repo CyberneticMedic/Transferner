@@ -78,6 +78,9 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
 
     /** One upright frame. [alpha] blends this frame's genus probabilities into a running average, so the
      *  live label does not flicker between frames. */
+    /** Live warning flags (D-038): per detector genus, 2 = has a cited serious toxic species, 1 = only mild, 0 = none. */
+    @Volatile var genusWarn: IntArray? = null
+
     /** Focus chip (D-037): per-genus logit bias, or null for no focus. Set from the detector thread. */
     @Volatile var focusBias: FloatArray? = null
 
@@ -102,7 +105,11 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         val boxes = all.filterIndexed { i, b -> b.score >= if (i == 0) 0.25f else 0.4f }
         val best = all.firstOrNull()?.score ?: 0f
         val (genera, fam, famP) = Detections.genera(ps, meta)
-        return LiveResult(genera, fam, famP, boxes, meta.size, best)
+        val warn = genusWarn?.let { gw ->
+            Detections.topK(ps, 8).filter { gw[it] > 0 && ps[it] >= io.github.cyberneticmedic.transferner.core.WarningIndex.LIVE_MIN_P }
+                .map { io.github.cyberneticmedic.transferner.core.LiveWarning(meta.genera[it], ps[it], gw[it] == 2) }
+        }.orEmpty()
+        return LiveResult(genera, fam, famP, boxes, meta.size, best, warn)
     }
 
     fun resetSmoothing() { smooth = null }
@@ -126,7 +133,9 @@ class SpeciesIdentifier(
 
     data class Timing(val preMs: Float, val modelMs: Float, val headMs: Float)
 
-    fun identify(argb: IntArray, w: Int, h: Int): Pair<List<Candidate>, Timing> {
+    private val warnings = io.github.cyberneticmedic.transferner.core.WarningIndex(catalog)
+
+    fun identify(argb: IntArray, w: Int, h: Int): Triple<List<Candidate>, List<Candidate>, Timing> {
         val t0 = System.nanoTime()
         val x = Preprocess.speciesInput(argb, w, h, meta)
         val t1 = System.nanoTime()
@@ -134,9 +143,9 @@ class SpeciesIdentifier(
         runner.run(mapOf(meta.input.name to inBuf), mapOf(meta.output.name to outBuf))
         val e = outBuf.readFloat()
         val t2 = System.nanoTime()
-        val top = head.top(e, catalog)
+        val (top, extra) = head.topWithFlags(e, catalog, warnings)
         val t3 = System.nanoTime()
-        return top to Timing((t1 - t0) / 1e6f, (t2 - t1) / 1e6f, (t3 - t2) / 1e6f)
+        return Triple(top, extra, Timing((t1 - t0) / 1e6f, (t2 - t1) / 1e6f, (t3 - t2) / 1e6f))
     }
 
     override fun close() {

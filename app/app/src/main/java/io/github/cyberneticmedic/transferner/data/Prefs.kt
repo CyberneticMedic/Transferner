@@ -19,6 +19,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("show_timings", true)
         set(v) = sp.edit().putBoolean("show_timings", v).apply()
 
+    /** Live boxes are drawn when their plant score (objectness) is at least this (D-039; 0.25 by default). */
+    var boxThreshold: Float
+        get() = sp.getFloat("box_threshold", 0.25f)
+        set(v) = sp.edit().putFloat("box_threshold", v).apply()
+
     /** The species-model plan (DevicePlanner, then any fallbacks); null until first planned. */
     var plan: Plan?
         get() {

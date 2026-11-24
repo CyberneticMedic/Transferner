@@ -251,3 +251,9 @@ Newest at the bottom. Format: ID · date · decision · why.
     - On `mnv4_shared`, regional val: misses 5.5%, false alarms 37% (test 5.6%, 35%). 206 of the detector's 1,359 genera hold a cited toxic species (140 serious).
     - Re-measure on the retrained live model.
   - **Latency:** the user allows up to 200 ms per live frame on the Moto G Power 2025 for a better accuracy trade-off. Next live model: `mnv4_live` fine-tuned at 448 px (`train_live_head --size 448`, about 2× the 320 px compute). The training photos are stored at about 480 px, so 448 is the useful ceiling. Measured Moto timings come from the app's device report (0.4+).
+- **D-039 · 2026-11-24 · Adjustable plant-score sensitivity (user request).**
+  - The live detector now returns its top 3 boxes after NMS unfiltered. The screen draws those scoring at least the user's threshold: 0.05 to 0.9, default 0.25, stored in prefs.
+  - Controls:
+    - A slider on the live sheet, shown with the prototype controls (timings on). Right means more sensitive.
+    - The same slider in Settings, with a reset to 0.25.
+    - The status pill counts the boxes actually drawn and keeps showing the frame's best score, so the threshold can be set against what the Moto actually scores.

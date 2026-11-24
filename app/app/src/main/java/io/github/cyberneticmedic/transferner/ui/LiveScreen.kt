@@ -37,6 +37,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -143,6 +146,7 @@ fun LiveScreen(vm: AppViewModel) {
     }
 
     val frame by vm.live.collectAsState()
+    val boxThr by vm.boxThreshold.collectAsState()
     var topBarBottom by remember { mutableFloatStateOf(0f) }
     var sheetTop by remember { mutableFloatStateOf(Float.MAX_VALUE) }
     val measurer = rememberTextMeasurer()
@@ -161,7 +165,8 @@ fun LiveScreen(vm: AppViewModel) {
         // whole frame (regional test photos: median 93% of the frame), which 0.2 drew off-screen or under the
         // overlays; such a box is now shown as brackets on the visible area, labelled "plant fills the frame".
         val f = frame
-        if (showBoxes && f != null && f.result.boxes.isNotEmpty()) {
+        val shown = f?.result?.boxes?.filter { it.score >= boxThr }.orEmpty()
+        if (showBoxes && f != null && shown.isNotEmpty()) {
             Canvas(Modifier.fillMaxSize()) {
                 val s = max(size.width / f.frameW, size.height / f.frameH)
                 val ox = (size.width - f.frameW * s) / 2
@@ -177,7 +182,7 @@ fun LiveScreen(vm: AppViewModel) {
                     drawRoundRect(Color(0xB80A0E0C), at, GSize(m.size.width + 2 * pad, m.size.height + pad), CornerRadius(6.dp.toPx()))
                     drawText(m, topLeft = Offset(at.x + pad, at.y + pad / 2))
                 }
-                for ((i, b) in f.result.boxes.withIndex()) {
+                for ((i, b) in shown.withIndex()) {
                     val r = Rect(ox + b.x0 / k * f.frameW * s, oy + b.y0 / k * f.frameH * s,
                                  ox + b.x1 / k * f.frameW * s, oy + b.y1 / k * f.frameH * s).intersect(vis)
                     if (r.width <= 0f || r.height <= 0f) continue
@@ -207,8 +212,8 @@ fun LiveScreen(vm: AppViewModel) {
             Text("Transferner", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             val status = when {
                 !models.detectorReady -> "Loading models…"
-                showTimings && f != null -> "Live · %.0f ms · %d box%s · best %.2f".format(f.modelMs + f.preMs, f.result.boxes.size,
-                    if (f.result.boxes.size == 1) "" else "es", f.result.bestScore)
+                showTimings && f != null -> "Live · %.0f ms · %d box%s · best %.2f".format(f.modelMs + f.preMs, shown.size,
+                    if (shown.size == 1) "" else "es", f.result.bestScore)
                 else -> "Live"
             }
             Row(Modifier.background(Color(0x24FFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp),
@@ -275,7 +280,23 @@ fun LiveScreen(vm: AppViewModel) {
                         modifier = Modifier.background(Color(0x1AFFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp))
                 }
             }
-            Text("Live guesses are genus-level and rough. Capture a still for a species match.", color = C.onDark2, fontSize = 13.sp, lineHeight = 18.sp)
+            if (showTimings && showBoxes) {
+                // Plant-score sensitivity (D-039): right = more sensitive (lower score needed for a box)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Box sensitivity", color = C.onDark2, fontSize = 13.sp)
+                    Slider(
+                        value = MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - boxThr,
+                        onValueChange = { vm.setBoxThreshold(MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - it) },
+                        valueRange = MIN_BOX_THRESHOLD..MAX_BOX_THRESHOLD,
+                        colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color(0x40FFFFFF)),
+                        modifier = Modifier.weight(1f).height(32.dp)
+                            .semantics { contentDescription = "Box sensitivity: boxes shown from plant score %.2f".format(boxThr) },
+                    )
+                    Text("≥ %.2f".format(boxThr), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            } else {
+                Text("Live guesses are genus-level and rough. Capture a still for a species match.", color = C.onDark2, fontSize = 13.sp, lineHeight = 18.sp)
+            }
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 RoundButton(R.drawable.ic_list, "Observation log") { vm.go(Screen.LOG) }
                 RoundButton(R.drawable.ic_photo, "Identify a photo from the gallery") {

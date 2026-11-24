@@ -16,6 +16,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -115,6 +117,17 @@ fun SettingsScreen(vm: AppViewModel) {
             Card {
                 Toggle("Show live boxes", boxes) { boxes = it; vm.prefs.showBoxes = it }
                 Toggle("Show timings", timings) { timings = it; vm.prefs.showTimings = it }
+                val thr by vm.boxThreshold.collectAsState()
+                Text("Plant-score sensitivity: boxes drawn from score %.2f (default 0.25). Higher sensitivity shows weaker detections, and more false boxes.".format(thr),
+                    fontSize = 13.sp, color = C.ink2, lineHeight = 18.sp)
+                Slider(value = MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - thr, onValueChange = { vm.setBoxThreshold(MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - it) },
+                    valueRange = MIN_BOX_THRESHOLD..MAX_BOX_THRESHOLD,
+                    colors = SliderDefaults.colors(thumbColor = C.green, activeTrackColor = C.green))
+                Row {
+                    Text("Fewer boxes", fontSize = 12.sp, color = C.muted, modifier = Modifier.weight(1f))
+                    Text("More boxes", fontSize = 12.sp, color = C.muted)
+                }
+                OutlinedButton(onClick = { vm.setBoxThreshold(0.25f) }, shape = RoundedCornerShape(10.dp)) { Text("Reset to 0.25", color = C.green) }
                 Text("The live label comes from the whole frame (D-033). If the app is stopped while loading or running a model, it steps down to the next fallback on restart (D-035).",
                     fontSize = 12.5.sp, color = C.muted, lineHeight = 17.sp)
             }

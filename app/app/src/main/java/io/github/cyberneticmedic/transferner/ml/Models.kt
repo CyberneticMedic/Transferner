@@ -101,9 +101,9 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         val reg = outBufs.getValue(outs.boxes.name).readAsFloat(outs.boxes)
         // Best box from 0.25, further boxes from 0.4, at most 3 (0.2 drew >= 0.5 only; on 300 regional test photos
         // the best box scored >= 0.5 in 87%, >= 0.3 in 97%; live frames on the Moto score lower)
-        val all = Detections.boxes(obj, Detections.decode(reg, meta), meta, maxBoxes = 3)
-        val boxes = all.filterIndexed { i, b -> b.score >= if (i == 0) 0.25f else 0.4f }
-        val best = all.firstOrNull()?.score ?: 0f
+        // all top boxes after NMS; the screen applies the user's plant-score threshold (D-039)
+        val boxes = Detections.boxes(obj, Detections.decode(reg, meta), meta, maxBoxes = 3)
+        val best = boxes.firstOrNull()?.score ?: 0f
         val (genera, fam, famP) = Detections.genera(ps, meta)
         val warn = genusWarn?.let { gw ->
             Detections.topK(ps, 8).filter { gw[it] > 0 && ps[it] >= io.github.cyberneticmedic.transferner.core.WarningIndex.LIVE_MIN_P }

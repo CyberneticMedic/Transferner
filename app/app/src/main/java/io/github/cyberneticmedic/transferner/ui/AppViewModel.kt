@@ -42,6 +42,9 @@ import kotlin.math.min
 
 enum class Screen { SETUP, LIVE, RESULT, SPECIES, LOG, SETTINGS }
 
+const val MIN_BOX_THRESHOLD = 0.05f
+const val MAX_BOX_THRESHOLD = 0.9f
+
 sealed interface BundleState {
     data object Missing : BundleState
     data class Downloading(val p: Progress?) : BundleState
@@ -106,6 +109,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Set when a crash or failure means this phone needs another species-model variant downloaded. */
     val neededVariant = MutableStateFlow<String?>(null)
     private val history = ArrayDeque<Screen>()
+    /** Plant-score sensitivity (D-039): minimum objectness for a live box; lower = more boxes. */
+    val boxThreshold = MutableStateFlow(prefs.boxThreshold)
+    fun setBoxThreshold(v: Float) {
+        val t = (Math.round(v * 100) / 100f).coerceIn(MIN_BOX_THRESHOLD, MAX_BOX_THRESHOLD)
+        boxThreshold.value = t
+        prefs.boxThreshold = t
+    }
+
     /** Live focus chip (D-037): a growth-form id from focus.json, or null for no focus. */
     val focus = MutableStateFlow<String?>(null)
 

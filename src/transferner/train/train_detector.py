@@ -240,12 +240,20 @@ def anchors_for(model: SSD, size: int, dev) -> torch.Tensor:
         return model.anchor_generator(ImageList(x0, [(size, size)]), feats)[0]
 
 
-def ssd_loss_batched(model: SSD, out, anchors0: torch.Tensor, targets, iou_thresh: float = 0.5):
+def ssd_loss_batched(model: SSD, out, anchors0: torch.Tensor, targets, iou_thresh: float = 0.5,
+                     neg_floor: int = 0, inside_ignore: float = 0.0):
     """torchvision's SSD matching + loss (SSDMatcher at 0.5, smooth-L1 on encoded boxes, softmax CE with
     3:1 hard-negative mining, both normalised by the foreground count) for one shared anchor set, vectorised
     over the batch. torchvision loops over images and launches ~700 small kernels per step of 64 (87 ms vs
     30 ms fwd+bwd); losses and gradients are identical to ssd_loss (torchvision's compute_loss) on random
-    batches, images without boxes included."""
+    batches, images without boxes included, at the defaults below.
+    D-044 options (read-only audit detector_training-01/06):
+      neg_floor      each image mines max(3 x positives, neg_floor) hard negatives, so a plant-free frame
+                     (no boxes) finally contributes "no plant here" (at 0 it contributes nothing)
+      inside_ignore  unmatched anchors with at least this share of their area inside a GT box are not mined
+                     as negatives (78% of hard negatives sat on the plant itself)
+      targets[i]["box_loss"] = False   the image contributes neither positives nor negatives (vascular
+                     full-frame fallback boxes, which are often wrong)"""
     reg, logits = out["bbox_regression"].float(), out["cls_logits"].float()
     B, A, C = logits.shape
     G = max(1, max(len(t["boxes"]) for t in targets))
@@ -270,9 +278,21 @@ def ssd_loss_batched(model: SSD, out, anchors0: torch.Tensor, targets, iou_thres
     cls_t = torch.where(fg, lab.gather(1, m), 0)
     cls = F.cross_entropy(logits.view(-1, C), cls_t.view(-1), reduction="none").view(B, A)
     n_neg = model.neg_to_pos_ratio * fg.sum(1, keepdim=True)
-    neg = cls.detach().masked_fill(fg, -float("inf"))
+    if neg_floor:
+        n_neg = n_neg.clamp(min=neg_floor)
+    blocked = fg
+    if inside_ignore > 0:
+        a = anchors0
+        ix = (torch.minimum(gt[..., None, 2], a[:, 2]) - torch.maximum(gt[..., None, 0], a[:, 0])).clamp(min=0)
+        iy = (torch.minimum(gt[..., None, 3], a[:, 3]) - torch.maximum(gt[..., None, 1], a[:, 1])).clamp(min=0)
+        ioa = (ix * iy / ((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1])).clamp(min=1e-6)).masked_fill(~valid[..., None], 0)
+        blocked = blocked | (ioa.amax(1) >= inside_ignore)
+    off = torch.tensor([not t.get("box_loss", True) for t in targets], device=anchors0.device)
+    if off.any():
+        n_neg = n_neg.masked_fill(off[:, None], 0)
+    neg = cls.detach().masked_fill(blocked, -float("inf"))
     _, idx = neg.sort(1, descending=True)
-    hard = idx.sort(1)[1] < n_neg
+    hard = (idx.sort(1)[1] < n_neg) & ~blocked
     N = max(1, n_fg)
     return bbox / N, (cls[fg].sum() + cls[hard].sum()) / N
 
@@ -360,13 +380,33 @@ def field_degrade(img: torch.Tensor, size: int, low_light_p: float = 0.0) -> tor
     return img
 
 
+def white_balance(img: torch.Tensor) -> torch.Tensor:
+    """uint8 (3, H, W) -> the same scene under a random illuminant between ~2,500 K (warm: flashlight, low sun)
+    and ~7,500 K (cool: shade, overcast), as per-channel gains with the mean brightness kept."""
+    t = float(torch.empty(()).uniform_(-1.0, 1.0))                     # -1 warm ... +1 cool
+    gains = torch.tensor([1.0 - 0.28 * t, 1.0, 1.0 + 0.35 * t]).view(3, 1, 1)
+    gains = gains / gains.mean()
+    return (img.float() * gains).round().clamp(0, 255).byte()
+
+
+def photometric(kind: str):
+    """'ssd': torchvision's SSD distortion, which also permutes the RGB channels in ~42% of views (the audit
+    found the live model had learned to ignore red vs blue fruit). 'jitter' (D-044): brightness/contrast/
+    saturation and a small hue shift only; white balance is applied separately (white_balance)."""
+    if kind == "ssd":
+        return v2.RandomPhotometricDistort(p=0.5)
+    return v2.RandomApply([v2.ColorJitter(brightness=0.125, contrast=0.5, saturation=0.5, hue=0.02)], p=0.5)
+
+
 class BoxSet(Dataset):
-    def __init__(self, root, items: list, size: int, train: bool, low_light_p: float = 0.0):
+    def __init__(self, root, items: list, size: int, train: bool, low_light_p: float = 0.0, photo: str = "ssd",
+                 zoom_out: bool = True, wb_p: float = 0.0):
         self.root, self.items, self.size, self.train, self.low_light_p = root, items, size, train, low_light_p
+        self.wb_p = wb_p
         if train:
             self.tf = v2.Compose([
-                v2.RandomPhotometricDistort(p=0.5),
-                v2.RandomZoomOut(fill={tv_tensors.Image: (124, 116, 104), "others": 0}, side_range=(1.0, 3.0), p=0.3),
+                photometric(photo),
+                *([v2.RandomZoomOut(fill={tv_tensors.Image: (124, 116, 104), "others": 0}, side_range=(1.0, 3.0), p=0.3)] if zoom_out else []),
                 v2.RandomIoUCrop(),
                 v2.RandomHorizontalFlip(),
                 v2.Resize((size, size), antialias=True),
@@ -387,6 +427,8 @@ class BoxSet(Dataset):
         img, tgt = self.tf(tv_tensors.Image(img), {"boxes": boxes, "labels": torch.as_tensor(lab)})
         img = img.as_subclass(torch.Tensor)
         if self.train:
+            if self.wb_p and float(torch.rand(())) < self.wb_p:
+                img = white_balance(img)
             img = field_degrade(img, self.size, self.low_light_p)
         return img, tgt["boxes"].as_subclass(torch.Tensor).float(), tgt["labels"].long(), int(lab[0])
 

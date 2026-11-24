@@ -9,6 +9,9 @@ needs far less, so this graph emits:
                            identical to softmax over [bg, genera] but computed per location, not per anchor.
   boxes         (1, A, 4)  SSD box regression; the app decodes against the anchors in the sidecar
                            (torchvision BoxCoder, weights 10, 10, 5, 5) and runs one class-agnostic NMS.
+  region_logits (1, 9, G)  with --regions (D-044): the whole-frame head on 9 overlapping windows of the stride-32
+                           map (3 x 3, each about 57% of the frame per side), +1.4% compute. Walk mode names
+                           and draws the window behind an edible alert (read-only audit, edible_targeting_app-05).
 Input as in detector_litert: normalised (1, 3, 320, 320) NCHW; full INT8 has int8 input, so the app quantises
 pixels with a per-channel lookup table built from the sidecar's mean, std, scale and zero point.
 
@@ -25,6 +28,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.ops import nms
@@ -37,10 +41,21 @@ from .litert import mem_guard, peak_rss_gb, static_quantizer, write
 OUTPUTS = ("image_logits", "objectness", "boxes")
 
 
+def region_grid(h: int) -> tuple[int, int]:
+    """Window size k and stride s (in stride-32 cells) for 3 x 3 overlapping windows on an h x h map:
+    s = h // 4, k = h - 2s (10 -> 6/2 at 320 px, 14 -> 8/3 at 448 px)."""
+    s = h // 4
+    return h - 2 * s, s
+
+
 class AppExport(nn.Module):
-    def __init__(self, ssd, float_image_head: bool = False):
+    def __init__(self, ssd, float_image_head: bool = False, regions: bool = False):
         super().__init__()
         self.backbone, self.head = ssd.backbone, ssd.head
+        self.regions = regions
+        if regions:
+            import copy
+            self.region_cls = copy.deepcopy(ssd.head.image_cls[1:])
         self.float_image_head = False
         ic = getattr(self.head, "image_cls", None)
         if float_image_head and ic is not None:
@@ -71,7 +86,15 @@ class AppExport(nn.Module):
             image_logits = torch.matmul(torch.relu(torch.matmul(x, self.w1.t()) + self.b1), self.w2.t()) + self.b2
         else:
             image_logits = h.image_logits(feats)
-        return image_logits, torch.cat(obj, 1), h.regression_head(feats)
+        if not self.regions:
+            return image_logits, torch.cat(obj, 1), h.regression_head(feats)
+        # The windows go through their own copy of the head (self.region_cls): a second call of the same module
+        # kept a float copy of its weights (14 -> 25 MB), and one shared call gave the whole-frame logits the
+        # windows' coarser int8 scale (0.27 -> 0.60). A copy is quantised on its own (+3 MB).
+        k, s = region_grid(feats[1].shape[-1])
+        r = self.region_cls(F.avg_pool2d(feats[1], kernel_size=k, stride=s))  # (B, G, 3, 3)
+        regions = r.flatten(2).permute(0, 2, 1)                                 # (B, 9, G), row-major windows
+        return image_logits, torch.cat(obj, 1), h.regression_head(feats), regions
 
 
 def score(run, loader, box_coder, anchors0, size, family_of, mean, std, keep=100, iou=0.55) -> dict:
@@ -106,6 +129,17 @@ def score(run, loader, box_coder, anchors0, size, family_of, mean, std, keep=100
             "image_genus_top5": top5 / n, "image_family_top1": fam1 / n, "n_images": n}
 
 
+def regions_meta(model, size: int) -> dict:
+    """The 9 windows of region_logits as [x0, y0, x1, y1] fractions of the squashed frame, row-major."""
+    with torch.no_grad():
+        h = model.backbone(torch.zeros(1, 3, size, size))
+    cells = list(h.values())[1].shape[-1]
+    k, s = region_grid(cells)
+    win = [[round(c * s / cells, 4), round(r * s / cells, 4), round((c * s + k) / cells, 4), round((r * s + k) / cells, 4)]
+           for r in range(3) for c in range(3)]
+    return {"grid": [3, 3], "cells": cells, "window_cells": k, "stride_cells": s, "windows": win}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="mnv4_shared")
@@ -116,6 +150,7 @@ def main() -> None:
     ap.add_argument("--float-image-head", action="store_true",
                     help="keep the whole-frame head (head.image_cls: pool -> 1280 -> genera, ~3M MACs) in float: its INT8 "
                          "logits (scale ~0.27) cost mnv4_live 3.7 pt whole-frame genus top-1 on 512 val photos")
+    ap.add_argument("--regions", action="store_true", help="add the (1, 9, G) region_logits output (tag _rg)")
     ap.add_argument("--images", type=int, default=512)
     ap.add_argument("--split", default="val")
     ap.add_argument("--calib", type=int, default=256)
@@ -150,21 +185,23 @@ def main() -> None:
     anchors0 = anchors_for(model, size, "cpu")
     run_score = lambda run: score(run, dl, model.box_coder, anchors0, size, family_of, mean, std)
 
-    exp = AppExport(model, args.float_image_head).eval()
+    exp = AppExport(model, args.float_image_head, args.regions).eval()
+    if args.regions:
+        assert model.head.image_cls is not None, "--regions needs the whole-frame head (train_live_head)"
     with torch.no_grad():                      # the app graph must equal the training graph's postprocessing
         x = cx[:4]
-        il, ob, bx = exp(x)
+        il, ob, bx = exp(x)[:3]
         ref = Net(model)(x)
         ref_obj = 1 - ref["cls_logits"].float().softmax(-1)[..., 0]
         err = float((ob - ref_obj).abs().max())
         assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref["image_logits"], atol=1e-5), err
         print(f"app graph == training graph (objectness max err {err:.1e})", flush=True)
         t0 = time.time()
-        fl = run_score(lambda x: exp(x))
+        fl = run_score(lambda x: exp(x)[:3])
     print("float:", fl, f"({time.time() - t0:.0f} s)", flush=True)
 
     tag = args.recipe + ("_minmax" if args.recipe == "int8" and args.act_observer == "minmax" else "") + \
-        ("_fh" if args.float_image_head and args.recipe == "int8" else "")
+        ("_fh" if args.float_image_head and args.recipe == "int8" else "") + ("_rg" if args.regions else "")
     row = {"recipe": f"detector_{args.name}_app_{tag}", "torch": torch.__version__, "images": args.images,
            "split": args.split, "threads": args.threads, "epoch": ck["epoch"],
            **{f"float_{k}": round(v, 4) for k, v in fl.items() if k != "n_images"}}
@@ -196,18 +233,19 @@ def main() -> None:
     key = next(iter(sig))
     runner = it.get_signature_runner(key)
     ins, outs = runner.get_input_details(), runner.get_output_details()
-    assert len(ins) == 1 and len(outs) == 3, (ins.keys(), outs.keys())
+    names = OUTPUTS + (("region_logits",) if args.regions else ())
+    assert len(ins) == 1 and len(outs) == len(names), (ins.keys(), outs.keys())
     in_name, ind = next(iter(ins.items()))
     G, A = len(genera), len(anchors0)
-    by_shape = {(1, G): "image_logits", (1, A): "objectness", (1, A, 4): "boxes"}
+    by_shape = {(1, G): "image_logits", (1, A): "objectness", (1, A, 4): "boxes", (1, 9, G): "region_logits"}
     out_names = {by_shape[tuple(int(s) for s in o["shape"])]: n for n, o in outs.items()}
-    assert set(out_names) == set(OUTPUTS), out_names
+    assert set(out_names) == set(names), out_names
     q = lambda det: {"dtype": np.dtype(det["dtype"]).name, "shape": [int(s) for s in det["shape"]],
                      "scale": float(det["quantization"][0]), "zero_point": int(det["quantization"][1])}
     times = []
 
     def tfl(x):
-        res = {k: [] for k in OUTPUTS}
+        res = {k: [] for k in names}
         for i in range(len(x)):
             v = x[i:i + 1].numpy()
             if np.issubdtype(ind["dtype"], np.integer):
@@ -217,16 +255,25 @@ def main() -> None:
             t1 = time.perf_counter()
             o = runner(**{in_name: v.astype(ind["dtype"])})
             times.append(time.perf_counter() - t1)
-            for k in OUTPUTS:
+            for k in names:
                 det = outs[out_names[k]]
                 a = o[out_names[k]].astype(np.float32)
                 if np.issubdtype(det["dtype"], np.integer):
                     a = (a - det["quantization"][1]) * det["quantization"][0]
                 res[k].append(torch.from_numpy(a))
-        return tuple(torch.cat(res[k]) for k in OUTPUTS)
+        return tuple(torch.cat(res[k]) for k in names)
 
-    got = run_score(tfl)
+    got = run_score(lambda x: tfl(x)[:3])
     print("litert:", got, flush=True)
+    region_check = None
+    if args.regions:                           # INT8 vs float region labels on 64 held-out frames of the check split
+        hx = torch.cat([((imgs.float() / 255) - mean) / std for imgs, *_ in dl[:4]])[:64]
+        with torch.no_grad():
+            rf = exp(hx)[3]
+        rq = tfl(hx)[3]
+        region_check = {"split": args.split, "frames": len(hx), "top1_agree": round(float((rf.argmax(-1) == rq.argmax(-1)).float().mean()), 4),
+                        "max_abs": round(float((rf - rq).abs().max()), 3)}
+        print("regions int8 vs float:", region_check, flush=True)
     row.update(status="ok", x86_ms_median=round(1000 * float(np.median(times[1:])), 1), peak_rss_gb=round(peak_rss_gb(), 1),
                **{f"q_{k}": round(v, 4) for k, v in got.items() if k != "n_images"},
                **{f"delta_{k}": round(got[k] - fl[k], 4) for k in ("agnostic_ap50", "image_genus_top1", "image_family_top1")})
@@ -237,13 +284,14 @@ def main() -> None:
         "mean": [float(v) for v in model.backbone.mean], "std": [float(v) for v in model.backbone.std],
         "resize": "squash to size x size, bilinear (training used torchvision Resize((s, s)), antialias)",
         "input": {"name": in_name, **q(ind)},
-        "outputs": {k: {"name": out_names[k], **q(outs[out_names[k]])} for k in OUTPUTS},
+        "outputs": {k: {"name": out_names[k], **q(outs[out_names[k]])} for k in names},
         "box_coder": {"weights": [float(w) for w in model.box_coder.weights], "clip": math.log(1000.0 / 16),
                       "anchors": "xyxy pixels at size"},
         "anchors": [[round(float(v), 3) for v in a] for a in anchors0],
         "postprocess": {"objectness_topk": 300, "nms_iou": 0.55, "max_boxes": 100},
         "genera": genera, "families": families, "family_of": [int(v) for v in family_of],
-        "check": {"split": args.split, "images": args.images, "float": fl, "litert": got,
+        **({"regions": regions_meta(model, size)} if args.regions else {}),
+        "check": {"split": args.split, "images": args.images, "float": fl, "litert": got, "regions": region_check,
                   "checkpoint": f"{args.name}/{args.ckpt}", "epoch": int(ck["epoch"])},
     }
     (d / f"detector_app_{tag}.json").write_text(json.dumps(side))

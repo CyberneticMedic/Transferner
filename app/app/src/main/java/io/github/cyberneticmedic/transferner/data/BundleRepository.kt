@@ -4,6 +4,8 @@ import io.github.cyberneticmedic.transferner.core.BundleJson
 import io.github.cyberneticmedic.transferner.core.Catalog
 import io.github.cyberneticmedic.transferner.core.DetectorMeta
 import io.github.cyberneticmedic.transferner.core.FocusMeta
+import io.github.cyberneticmedic.transferner.core.ForageMeta
+import io.github.cyberneticmedic.transferner.core.Tuning
 import io.github.cyberneticmedic.transferner.core.HeadMeta
 import io.github.cyberneticmedic.transferner.core.Latest
 import io.github.cyberneticmedic.transferner.core.Manifest
@@ -26,6 +28,8 @@ class BundleFiles(
     val head: HeadMeta,
     val catalog: Catalog,
     val focus: FocusMeta? = null,               // optional (bundle 0.3+): the live focus chip's categories
+    val tuning: Tuning = Tuning(),              // optional (bundle 0.6+): thresholds; defaults otherwise
+    val forage: ForageMeta? = null,             // optional (bundle 0.6+): walk-mode target genera
 ) {
     val species: SpeciesModelMeta get() = speciesModels[variant] ?: error("variant $variant not in species.json")
 }
@@ -58,6 +62,8 @@ class BundleRepository(private val root: File) {
             BundleJson.decodeFromString(File(dir, "head.json").readText()),
             BundleJson.decodeFromString(File(dir, "catalog.json").readText()),
             File(dir, "focus.json").takeIf { it.exists() }?.let { BundleJson.decodeFromString<FocusMeta>(it.readText()) },
+            File(dir, "tuning.json").takeIf { it.exists() }?.let { BundleJson.decodeFromString<Tuning>(it.readText()) } ?: Tuning(),
+            File(dir, "forage.json").takeIf { it.exists() }?.let { BundleJson.decodeFromString<ForageMeta>(it.readText()) },
         )
     }
 

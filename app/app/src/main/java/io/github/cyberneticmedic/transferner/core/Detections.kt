@@ -17,6 +17,13 @@ data class LiveResult(
     val size: Int,
     val bestScore: Float = 0f,                  // highest objectness this frame, shown or not (diagnostics)
     val warnings: List<LiveWarning> = emptyList(),
+    /** Smoothed whole-frame genus distribution WITHOUT the focus prior: warnings and walk alerts use it. */
+    val rawPs: FloatArray? = null,
+    /** Top-5 mass of [rawPs]: plant presence (audit: AUROC 0.97 plant vs non-plant, objectness ~0.45). */
+    val presence: Float = 1f,
+    /** (9 x G) window logits when the detector has them (bundle 0.6+), else null. */
+    val regionLogits: FloatArray? = null,
+    val timeMs: Long = 0,
 )
 
 /** A live guess whose genus holds a cited toxic species (D-038); serious = moderate/high or contact. */

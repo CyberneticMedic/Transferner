@@ -24,6 +24,7 @@ import argparse
 import json
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -38,7 +39,8 @@ from ..eval.metrics import coco_map
 from ..utils.config import data_root, load
 from ..utils.csvlog import RunLog
 from .train_detector import (BoxSet, Net, anchors_for, build, collate, detect, evaluate, field_degrade, forward_raw,
-                             load_items, python_headers_for_triton, ssd_loss_batched, use_shift_add_depthwise)
+                             load_items, photometric, python_headers_for_triton, ssd_loss_batched, use_shift_add_depthwise,
+                             white_balance)
 
 
 def teacher(root, out_path, genera, args) -> pd.DataFrame:
@@ -75,17 +77,19 @@ class ImgSet(Dataset):
     """Unboxed photos for the whole-frame loss: random resized crop (walking framing), flip, photometric
     distortion, then the field artefacts incl. low light."""
 
-    def __init__(self, root, paths, labels, tidx, tp, size, low_light_p):
+    def __init__(self, root, paths, labels, tidx, tp, size, low_light_p, photo="ssd", wb_p=0.0):
         self.root, self.paths, self.labels, self.tidx, self.tp = root, paths, labels, tidx, tp
-        self.size, self.low_light_p = size, low_light_p
+        self.size, self.low_light_p, self.wb_p = size, low_light_p, wb_p
         self.tf = v2.Compose([v2.RandomResizedCrop(size, scale=(0.2, 1.0), antialias=True), v2.RandomHorizontalFlip(),
-                              v2.RandomPhotometricDistort(p=0.5)])
+                              photometric(photo)])
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, i):
         img = self.tf(decode_image(str(self.root / self.paths[i]), mode=ImageReadMode.RGB))
+        if self.wb_p and float(torch.rand(())) < self.wb_p:
+            img = white_balance(img)
         img = field_degrade(img, self.size, self.low_light_p)
         return img, int(self.labels[i]), torch.from_numpy(self.tidx[i].astype(np.int64)), torch.from_numpy(self.tp[i].astype(np.float32))
 
@@ -122,6 +126,125 @@ class MosaicBoxSet(Dataset):
         return img, torch.cat(boxes), torch.cat(labels), 0
 
 
+K_SOFT = 4
+
+
+def paste(bg: torch.Tensor, crop: torch.Tensor, x0: int, y0: int, feather: int) -> torch.Tensor:
+    """Alpha-blend crop (3, h, w) into bg at (x0, y0) with a linear ramp of `feather` px at the crop's edges,
+    so there is no hard seam to learn (audit: hard-seam mosaics were 91% 'detectable' vs 40% feathered)."""
+    _, h, w = crop.shape
+    f = max(1, min(feather, h // 4, w // 4))
+    ry = torch.clamp(torch.minimum(torch.arange(h) + 1, torch.arange(h).flip(0) + 1).float() / f, max=1.0)
+    rx = torch.clamp(torch.minimum(torch.arange(w) + 1, torch.arange(w).flip(0) + 1).float() / f, max=1.0)
+    a = (ry[:, None] * rx[None, :])[None]
+    region = bg[:, y0:y0 + h, x0:x0 + w].float()
+    bg[:, y0:y0 + h, x0:x0 + w] = (a * crop.float() + (1 - a) * region).round().clamp(0, 255).byte()
+    return bg
+
+
+class LiveBoxSet(Dataset):
+    """The boxed stream of the D-044 recipe. Each sample is one of:
+      a plant-free frame (p_neg; manifests/negatives.parquet): no boxes, so with the SSD loss's negative floor
+        the detector learns "no plant here", and a uniform whole-frame target (the presence gate's signal);
+      a seam-free composite (p_comp): 1-3 OWLv2-boxed plants cut out with a 10% margin, scaled to 15-50% of the
+        frame, feathered and pasted onto a real vegetation scene; boxes where they landed, and an area-weighted
+        whole-frame target over the pasted genera (mosaics had none);
+      a boxed photo as before, except that vascular full-frame fallback boxes (often wrong; audit
+        detector_training-02) contribute no box loss when fallback_off holds the photo's path.
+    Returns (img, boxes, labels, soft) with soft = (genus idx[K_SOFT], weight[K_SOFT], uniform, box_loss)."""
+
+    def __init__(self, root, items, size, low_light_p, photo, wb_p, p_comp, p_neg, negs, vegs, fallback_off, comp_items):
+        self.root, self.items, self.size = root, items, size
+        self.full = BoxSet(root, items, size, True, low_light_p, photo, zoom_out=p_comp == 0, wb_p=wb_p)
+        self.p_comp, self.p_neg, self.negs, self.vegs = p_comp, p_neg, negs, vegs
+        self.fallback_off, self.comp_items = fallback_off, comp_items
+        self.low_light_p, self.wb_p = low_light_p, wb_p
+        self.bg_tf = v2.Compose([v2.RandomResizedCrop(size, scale=(0.35, 1.0), antialias=True), v2.RandomHorizontalFlip(),
+                                 photometric(photo)])
+
+    def __len__(self):
+        return len(self.items)
+
+    def _soft(self, genera, weights, uniform=False, box_loss=True):
+        idx = torch.full((K_SOFT,), 0, dtype=torch.long)
+        w = torch.zeros(K_SOFT)
+        for k, (g, v) in enumerate(list(zip(genera, weights))[:K_SOFT]):
+            idx[k], w[k] = g, v
+        if w.sum() > 0:
+            w = w / w.sum()
+        return idx, w, torch.tensor(uniform), torch.tensor(box_loss)
+
+    def _finish(self, img):
+        if self.wb_p and float(torch.rand(())) < self.wb_p:
+            img = white_balance(img)
+        return field_degrade(img, self.size, self.low_light_p)
+
+    def _bg(self, paths):
+        p = paths[int(torch.randint(0, len(paths), ()))]
+        return self.bg_tf(decode_image(str(self.root / p), mode=ImageReadMode.RGB))
+
+    def composite(self):
+        S = self.size
+        img = self._bg(self.vegs).clone()
+        boxes, labels, areas = [], [], []
+        for _ in range(int(torch.randint(1, 4, ()))):
+            path, frac, lab = self.comp_items[int(torch.randint(0, len(self.comp_items), ()))]
+            src = decode_image(str(self.root / path), mode=ImageReadMode.RGB)
+            h, w = src.shape[-2:]
+            x0, y0, x1, y1 = (np.asarray(frac[0], np.float32) * np.array([w, h, w, h], np.float32)).tolist()
+            mx, my = 0.1 * (x1 - x0), 0.1 * (y1 - y0)
+            cx0, cy0, cx1, cy1 = max(0, int(x0 - mx)), max(0, int(y0 - my)), min(w, int(x1 + mx) + 1), min(h, int(y1 + my) + 1)
+            crop = src[:, cy0:cy1, cx0:cx1]
+            if crop.shape[1] < 16 or crop.shape[2] < 16:
+                continue
+            scale = float(torch.empty(()).uniform_(0.15, 0.5)) * S / max(crop.shape[1:])
+            nh, nw = max(8, int(crop.shape[1] * scale)), max(8, int(crop.shape[2] * scale))
+            crop = v2.functional.resize(crop, [nh, nw], antialias=True)
+            if float(torch.rand(())) < 0.5:
+                crop = crop.flip(-1)
+            for _try in range(8):                                        # avoid covering earlier pastes
+                px, py = int(torch.randint(0, S - nw + 1, ())), int(torch.randint(0, S - nh + 1, ()))
+                b = torch.tensor([px + (x0 - cx0) * scale, py + (y0 - cy0) * scale, px + (x1 - cx0) * scale, py + (y1 - cy0) * scale])
+                if not boxes or float(box_iou_1(b, torch.stack(boxes)).max()) < 0.2:
+                    break
+            paste(img, crop, px, py, int(torch.randint(4, 17, ())))
+            boxes.append(b.clamp(0, S)); labels.append(int(lab[0])); areas.append(float((b[2] - b[0]) * (b[3] - b[1])))
+        img = self._finish(img)
+        if not boxes:
+            return img, torch.zeros(0, 4), torch.zeros(0, dtype=torch.long), self._soft([], [], uniform=False, box_loss=False)
+        return img, torch.stack(boxes).float(), torch.tensor(labels), self._soft([l - 1 for l in labels], areas)
+
+    def negative(self):
+        img = self._finish(self._bg(self.negs))
+        return img, torch.zeros(0, 4), torch.zeros(0, dtype=torch.long), self._soft([], [], uniform=True)
+
+    def __getitem__(self, i):
+        r = float(torch.rand(()))
+        if r < self.p_neg:
+            return self.negative()
+        if r < self.p_neg + self.p_comp:
+            return self.composite()
+        img, b, lab, g = self.full[i]
+        off = self.items[i][0] in self.fallback_off
+        if off:
+            b, lab = torch.zeros(0, 4), torch.zeros(0, dtype=torch.long)
+        return img, b, lab, self._soft([g - 1], [1.0], box_loss=not off)
+
+
+def box_iou_1(b: torch.Tensor, others: torch.Tensor) -> torch.Tensor:
+    ix = (torch.minimum(b[2], others[:, 2]) - torch.maximum(b[0], others[:, 0])).clamp(min=0)
+    iy = (torch.minimum(b[3], others[:, 3]) - torch.maximum(b[1], others[:, 1])).clamp(min=0)
+    inter = ix * iy
+    area = (b[2] - b[0]) * (b[3] - b[1]) + (others[:, 2] - others[:, 0]) * (others[:, 3] - others[:, 1]) - inter
+    return inter / area.clamp(min=1e-6)
+
+
+def collate_live(batch):
+    imgs, boxes, labels, soft = zip(*batch)
+    idx, w, uni, bl = zip(*soft)
+    return torch.stack(imgs), list(boxes), list(labels), (torch.stack(idx), torch.stack(w), torch.stack(uni), torch.stack(bl))
+
+
 def mosaic_eval(model, net, items, size, anchors0, dev, mean, std, workers, n=2000) -> dict:
     """Class-agnostic box AP on deterministic 2x2 mosaics of the first n val photos: several plants per
     frame, each about a quarter of it, the live walking view the close-up photos lack."""
@@ -142,6 +265,99 @@ def mosaic_eval(model, net, items, size, anchors0, dev, mean, std, workers, n=20
     g = {k: np.concatenate(v) for k, v in gts.items()}
     m = coco_map(d["img"], np.zeros(len(d["img"]), int), d["score"], d["box"], g["img"], np.zeros(len(g["img"]), int), g["box"])
     return {"mosaic_agnostic_ap50": m["ap50"], "mosaic_agnostic_map": m["map"]}
+
+
+class SeededComposites(Dataset):
+    """Deterministic composites (index-seeded) for the composite metric: the walking view of several
+    plants on real vegetation without the hard seams the 2x2 mosaic metric rewarded."""
+
+    def __init__(self, base: "LiveBoxSet", n: int):
+        self.base, self.n = base, n
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        torch.manual_seed(100_003 + i)
+        img, b, lab, _ = self.base.composite()
+        return img, b, lab, 0
+
+
+class SeededNegatives(Dataset):
+    def __init__(self, root, paths, size):
+        self.root, self.paths, self.size = root, paths, size
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, i):
+        img = v2.Resize((self.size, self.size), antialias=True)(decode_image(str(self.root / self.paths[i]), mode=ImageReadMode.RGB))
+        return img, torch.zeros(0, 4), torch.zeros(0, dtype=torch.long), 0
+
+
+def composite_eval(model, net, base, size, anchors0, dev, mean, std, workers, n=1500) -> dict:
+    """Class-agnostic box AP50 on n seeded composites (see LiveBoxSet.composite)."""
+    model.eval()
+    dets, gts = {k: [] for k in ("img", "score", "box")}, {k: [] for k in ("img", "box")}
+    k0 = 0
+    dl = DataLoader(SeededComposites(base, n), batch_size=64, num_workers=workers, collate_fn=collate)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        for imgs, boxes, _, _ in dl:
+            out = forward_raw(net, ((imgs.to(dev).float() / 255) - mean) / std)
+            res, _ = detect(model.box_coder, {k: v.float() for k, v in out.items()}, anchors0, size)
+            for i, r in enumerate(res):
+                dets["img"].append(np.full(len(r["ascore"]), k0 + i)); dets["score"].append(r["ascore"]); dets["box"].append(r["abox"])
+                gts["img"].append(np.full(len(boxes[i]), k0 + i)); gts["box"].append(boxes[i].numpy())
+            k0 += len(res)
+    model.train()
+    d = {k: np.concatenate(v) for k, v in dets.items()}
+    g = {k: np.concatenate(v) for k, v in gts.items()}
+    m = coco_map(d["img"], np.zeros(len(d["img"]), int), d["score"], d["box"], g["img"], np.zeros(len(g["img"]), int), g["box"])
+    return {"composite_ap50": m["ap50"], "composite_map": m["map"]}
+
+
+def negative_eval(model, net, root, paths, size, dev, mean, std, workers) -> dict:
+    """Plant-free val frames: share with any box at the app's default plant score 0.25, and the median
+    top-5 whole-frame mass (the presence gate's signal; lower is better here)."""
+    model.eval()
+    boxed, masses = [], []
+    dl = DataLoader(SeededNegatives(root, paths, size), batch_size=64, num_workers=workers, collate_fn=collate)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        for imgs, _, _, _ in dl:
+            out = forward_raw(net, ((imgs.to(dev).float() / 255) - mean) / std)
+            obj = 1.0 - out["cls_logits"].float().softmax(-1)[..., 0]
+            boxed.append((obj.amax(1) >= 0.25).cpu().numpy())
+            masses.append(out["image_logits"].float().softmax(-1).topk(5, 1).values.sum(1).cpu().numpy())
+    model.train()
+    return {"neg_box_rate": float(np.concatenate(boxed).mean()), "neg_mass_p50": float(np.median(np.concatenate(masses)))}
+
+
+def trait_items(root, gi, split="val", cap=20, seed=0) -> list:
+    """Non-specimen photos (all sources) of genera with cited trait rows, at most `cap` per genus: the guard
+    metric for encounter weighting (eval/trait_recall.py; garden edibles and hemlocks are rare in the pool)."""
+    repo = Path(__file__).resolve().parents[3]
+    sp = pd.read_parquet(root / "manifests/species.parquet", columns=["class_idx", "scientific_name", "genus"])
+    tg = set(sp[sp.scientific_name.isin(set(pd.read_csv(repo / "data/traits/species_traits.csv").scientific_name))].genus)
+    m = pd.read_parquet(root / f"artifacts/img_emb/{split}.parquet", columns=["uuid", "class_idx", "is_specimen"])
+    m = m[~m.is_specimen.fillna(False).astype(bool)].merge(sp[["class_idx", "genus"]], on="class_idx")
+    m = m[m.genus.isin(tg) & m.genus.isin(gi)].merge(pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
+    m = m.sample(frac=1, random_state=seed).groupby("genus").head(cap)
+    box = np.zeros((1, 4), np.float32)
+    return [(p, box, np.array([gi[g] + 1])) for p, g in zip(m.path, m.genus)]
+
+
+def trait_eval(model, net, items, size, n_genera, dev, mean, std, workers) -> dict:
+    model.eval()
+    hit = np.zeros(n_genera); cnt = np.zeros(n_genera)
+    dl = DataLoader(BoxSet(data_root(), items, size, False), batch_size=128, num_workers=workers, collate_fn=collate)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        for imgs, _, _, genus in dl:
+            p = forward_raw(net, ((imgs.to(dev).float() / 255) - mean) / std)["image_logits"].argmax(1).cpu().numpy()
+            y = genus.numpy() - 1
+            np.add.at(cnt, y, 1); np.add.at(hit, y, p == y)
+    model.train()
+    m = cnt > 0
+    return {"trait_genus_recall": float((hit[m] / cnt[m]).mean())}
 
 
 def encounter_share(root, genera) -> np.ndarray:
@@ -253,9 +469,23 @@ def main() -> None:
                     help="unboxed sampler: share of each genus' training attention set by how often it is met in the region "
                          "(its share of regional observations ^ --encounter-power); the rest stays n^sampler-power (D-040)")
     ap.add_argument("--encounter-power", type=float, default=1.0)
-    ap.add_argument("--select", choices=["val", "encounter"], default="val",
+    ap.add_argument("--select", choices=["val", "encounter", "pool"], default="val",
                     help="checkpoint selection: val whole-frame genus top-1, or encounter-weighted regional val top-1")
-    ap.add_argument("--box-weight", type=float, default=0.25, help="selection: + this x val mosaic agnostic AP50")
+    ap.add_argument("--box-weight", type=float, default=0.25, help="selection: + this x val mosaic (or composite) agnostic AP50")
+    ap.add_argument("--preset", choices=["", "d044"], default="",
+                    help="d044: composites 0.4, plant-free frames 0.15, negative floor 32, no negatives inside boxes, "
+                         "vascular fallback boxes out of the box loss, colour jitter without channel shuffles + white "
+                         "balance 0.3, no mosaics, encounter weighting with trait genera exempt, select on pool top-1")
+    ap.add_argument("--composite", type=float, default=0.0, help="share of boxed samples that are seam-free composites")
+    ap.add_argument("--negatives", type=float, default=0.0, help="share of boxed samples that are plant-free frames")
+    ap.add_argument("--neg-floor", type=int, default=0, help="SSD loss: at least this many hard negatives per image")
+    ap.add_argument("--inside-ignore", type=float, default=0.0, help="SSD loss: no negatives this much inside a GT box")
+    ap.add_argument("--fallback-box-loss", choices=["keep", "vascular_off"], default="keep")
+    ap.add_argument("--photo", choices=["ssd", "jitter"], default="ssd")
+    ap.add_argument("--wb", type=float, default=0.0, help="white-balance augmentation probability")
+    ap.add_argument("--neg-image-weight", type=float, default=0.5, help="weight of the uniform whole-frame target on plant-free frames")
+    ap.add_argument("--neg-weight", type=float, default=0.25, help="selection: - this x plant-free frames with a box")
+    ap.add_argument("--encounter-exempt-traits", action="store_true", help="genera with cited trait rows keep at least their balanced share")
     ap.add_argument("--eval-only", default="", help="checkpoint: val + test metrics at --size, no training, no table row")
     ap.add_argument("--eval-every", type=int, default=4000, help="steps")
     ap.add_argument("--workers-img", type=int, default=14)
@@ -264,6 +494,10 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=0, help="smoke tests: total steps")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+    if args.preset == "d044":
+        for k, v in dict(composite=0.4, negatives=0.15, neg_floor=32, inside_ignore=0.5, fallback_box_loss="vascular_off",
+                         photo="jitter", wb=0.3, mosaic=0.0, encounter_exempt_traits=True, select="pool").items():
+            setattr(args, k, v)
     torch.manual_seed(args.seed)
     root, dev = data_root(), "cuda"
     size = args.size or cfg["model"]["input"]
@@ -299,11 +533,20 @@ def main() -> None:
         bal = bal / bal.sum()
         e = enc ** args.encounter_power; e = e / e.sum()
         target = (1 - args.encounter_mix) * bal + args.encounter_mix * e   # each genus' share of the samples
+        if args.encounter_exempt_traits:                                   # audit edible_targeting_app-10
+            repo = Path(__file__).resolve().parents[3]
+            spx = pd.read_parquet(root / "manifests/species.parquet", columns=["scientific_name", "genus"])
+            tg = set(spx[spx.scientific_name.isin(set(pd.read_csv(repo / "data/traits/species_traits.csv").scientific_name))].genus)
+            ex = np.array([g in tg for g in genera])
+            target = np.where(ex, np.maximum(target, bal), target)
+            target = target / target.sum()
+            print(f"encounter weighting: {ex.sum()} trait genera keep at least their balanced share ({target[ex].sum():.3f} of samples)", flush=True)
         w = (target / np.maximum(n_g.reindex(range(len(genera))).fillna(1).to_numpy(), 1))[u.g.to_numpy()]
         top50 = np.argsort(-enc)[:50]
         print(f"encounter mix {args.encounter_mix}: top-50 most-met genera get {target[top50].sum():.3f} of samples "
               f"(balanced alone {bal[top50].sum():.3f}; their sighting share {enc[top50].sum():.2f})", flush=True)
-    ds_img = ImgSet(root, u.path.to_numpy(), u.g.to_numpy(), np.stack(u.tidx.to_numpy()), np.stack(u.tp.to_numpy()), size, args.low_light)
+    ds_img = ImgSet(root, u.path.to_numpy(), u.g.to_numpy(), np.stack(u.tidx.to_numpy()), np.stack(u.tp.to_numpy()), size, args.low_light,
+                    args.photo, args.wb)
     dl_img = DataLoader(ds_img, batch_size=args.batch_img, num_workers=args.workers_img, pin_memory=True, drop_last=True,
                         persistent_workers=True, prefetch_factor=4,
                         sampler=WeightedRandomSampler(torch.as_tensor(w), len(u), replacement=True,
@@ -311,8 +554,35 @@ def main() -> None:
     train = splits["train"]
     nb = np.bincount([lab[0] for _, _, lab in train], minlength=len(genera) + 1)
     wb = np.array([nb[lab[0]] for _, _, lab in train], float) ** -args.sampler_power
-    dl_box = DataLoader(MosaicBoxSet(root, train, size, True, args.mosaic, args.low_light), batch_size=args.batch_box,
-                        num_workers=args.workers_box, collate_fn=collate, pin_memory=True, drop_last=True,
+    live = bool(args.composite or args.negatives or args.fallback_box_loss != "keep" or args.photo != "ssd")
+    if live:
+        bx = pd.read_parquet(root / args.boxes, columns=["uuid", "genus", "fallback"]).merge(
+            pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
+        fb_paths = set(bx[bx.fallback].path)
+        off = set()
+        if args.fallback_box_loss == "vascular_off":
+            spx = pd.read_parquet(root / "manifests/species.parquet", columns=["genus", "phylum", "family"]).drop_duplicates("genus")
+            nonvasc = set(spx[spx.phylum.isin(["Bryophyta", "Marchantiophyta", "Anthocerotophyta"]) |
+                              spx.family.isin(["Poaceae", "Cyperaceae", "Juncaceae"])].genus)   # mosses and mats keep the frame box
+            off = set(bx[bx.fallback & ~bx.genus.isin(nonvasc)].path)
+        negm = pd.read_parquet(root / "manifests/negatives.parquet")
+        negs_tr = negm[(negm.kind == "plant_free") & (negm.split == "train")].path.to_numpy()
+        vegs_tr = negm[(negm.kind == "vegetation") & (negm.split == "train")].path.to_numpy()
+        comp_items = [it for it in train if it[0] not in fb_paths]
+        print(f"D-044 boxed stream: composites {args.composite}, plant-free {args.negatives} ({len(negs_tr):,} frames, "
+              f"{len(vegs_tr):,} vegetation backgrounds), fallback box loss off for {sum(it[0] in off for it in train):,} of "
+              f"{len(train):,} boxed photos, photometric {args.photo}, white balance {args.wb}", flush=True)
+        box_ds = LiveBoxSet(root, train, size, args.low_light, args.photo, args.wb, args.composite, args.negatives,
+                            negs_tr, vegs_tr, off, comp_items)
+        box_collate = collate_live
+        vegs_val = negm[(negm.kind == "vegetation") & (negm.split == "val")].path.to_numpy()
+        negs_val = negm[(negm.kind == "plant_free") & (negm.split == "val")].sample(1500, random_state=0).path.to_numpy()
+        val_comp = LiveBoxSet(root, [it for it in splits["val"] if it[0] not in fb_paths], size, 0.0, "jitter", 0.0, 1.0, 0.0,
+                              negs_val, vegs_val, set(), [it for it in splits["val"] if it[0] not in fb_paths])
+    else:
+        box_ds, box_collate = MosaicBoxSet(root, train, size, True, args.mosaic, args.low_light), collate
+    dl_box = DataLoader(box_ds, batch_size=args.batch_box,
+                        num_workers=args.workers_box, collate_fn=box_collate, pin_memory=True, drop_last=True,
                         persistent_workers=True, prefetch_factor=4,
                         sampler=WeightedRandomSampler(torch.as_tensor(wb), len(train), replacement=True,
                                                       generator=torch.Generator().manual_seed(args.seed + 1)))
@@ -367,16 +637,25 @@ def main() -> None:
 
     last_row = [None]
 
+    trait_val = trait_items(root, gi) if live else []
+
     def evaluate_now():
         nonlocal best, best_step
         m = image_eval(model, net, splits["val"], size, family_of, dev, mean, std, args.workers_img)
         r = image_eval(model, net, val_reg, size, family_of, dev, mean, std, args.workers_img)
         mo = mosaic_eval(model, net, splits["val"], size, anchors0, dev, mean, std, args.workers_img)
         en = encounter_eval(model, net, pool_val, size, enc, dev, mean, std, args.workers_img)
-        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo, **en}
+        extra = {}
+        if live:
+            extra.update(composite_eval(model, net, val_comp, size, anchors0, dev, mean, std, args.workers_img))
+            extra.update(negative_eval(model, net, root, negs_val, size, dev, mean, std, args.workers_img))
+            extra.update(trait_eval(model, net, trait_val, size, len(genera), dev, mean, std, args.workers_img))
+        row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo, **en, **extra}
         log.log(step, "val", **row)
         print(f"step {step} val " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
-        key = (en["encounter_top1"] if args.select == "encounter" else m["image_genus_top1"]) + args.box_weight * mo["mosaic_agnostic_ap50"]
+        base = {"encounter": en["encounter_top1"], "pool": en["pool_top1"], "val": m["image_genus_top1"]}[args.select]
+        boxes_term = extra["composite_ap50"] if live else mo["mosaic_agnostic_ap50"]
+        key = base + args.box_weight * boxes_term - (args.neg_weight * extra["neg_box_rate"] if live else 0.0)
         if key > best:
             best, best_step = key, step
             torch.save(ckpt(row), out_dir / "best.pt")
@@ -398,13 +677,27 @@ def main() -> None:
                 bimgs, boxes, labels, genus = next(it_box)
             nbx = len(bimgs)
             x = ((torch.cat([bimgs, ximg]).to(dev, non_blocking=True).float() / 255) - mean) / std
-            targets = [{"boxes": b.to(dev, non_blocking=True), "labels": l.to(dev, non_blocking=True)} for b, l in zip(boxes, labels)]
+            box_on = genus[3].tolist() if live else [True] * nbx
+            targets = [{"boxes": b.to(dev, non_blocking=True), "labels": l.to(dev, non_blocking=True), "box_loss": bool(o)}
+                       for b, l, o in zip(boxes, labels, box_on)]
             with amp:
                 out = forward_raw(net, x)
-            l_box, l_cls = ssd_loss_batched(model, {k: out[k][:nbx] for k in ("cls_logits", "bbox_regression")}, anchors0, targets)
+            l_box, l_cls = ssd_loss_batched(model, {k: out[k][:nbx] for k in ("cls_logits", "bbox_regression")}, anchors0, targets,
+                                            neg_floor=args.neg_floor, inside_ignore=args.inside_ignore)
             il = out["image_logits"].float()
-            hard = torch.cat([genus.to(dev) - 1, y.to(dev)])          # mosaics: genus 0 -> -1, ignored
-            l_hard = F.cross_entropy(il, hard, ignore_index=-1)
+            if live:
+                # boxed stream: soft whole-frame targets (photo: its genus; composite: pasted genera by area;
+                # plant-free frame: uniform, weighted --neg-image-weight); unboxed stream: its label as before
+                sidx, sw, uni, _ = (t.to(dev) for t in genus)
+                lpb = F.log_softmax(il[:nbx], -1)
+                per = -(sw * lpb.gather(1, sidx)).sum(1)
+                per = torch.where(uni, -args.neg_image_weight * lpb.mean(1), per)
+                has = uni | (sw.sum(1) > 0)
+                l_un = F.cross_entropy(il[nbx:], y.to(dev), reduction="sum")
+                l_hard = (per[has].sum() + l_un) / max(1, int(has.sum()) + len(y))
+            else:
+                hard = torch.cat([genus.to(dev) - 1, y.to(dev)])          # mosaics: genus 0 -> -1, ignored
+                l_hard = F.cross_entropy(il, hard, ignore_index=-1)
             logp = F.log_softmax(il[nbx:], -1)
             l_kd = -(tp.to(dev) * logp.gather(1, tidx.to(dev))).sum(1).mean()
             l_img = (1 - args.kd) * l_hard + args.kd * l_kd
@@ -440,6 +733,14 @@ def main() -> None:
     test = image_eval(model, net, splits["test"], size, family_of, dev, mean, std, args.workers_img)
     test.update(mosaic_eval(model, net, splits["test"], size, anchors0, dev, mean, std, args.workers_img))
     test.update(encounter_eval(model, net, regional_pool(root, "test", gi), size, enc, dev, mean, std, args.workers_img))
+    if live:
+        negs_test = negm[(negm.kind == "plant_free") & (negm.split == "test")].sample(1500, random_state=0).path.to_numpy()
+        test_items = [it for it in splits["test"] if it[0] not in fb_paths]
+        test_comp = LiveBoxSet(root, test_items, size, 0.0, "jitter", 0.0, 1.0, 0.0, negs_test,
+                               negm[(negm.kind == "vegetation") & (negm.split == "test")].path.to_numpy(), set(), test_items)
+        test.update(composite_eval(model, net, test_comp, size, anchors0, dev, mean, std, args.workers_img))
+        test.update(negative_eval(model, net, root, negs_test, size, dev, mean, std, args.workers_img))
+        test.update(trait_eval(model, net, trait_items(root, gi, "test"), size, len(genera), dev, mean, std, args.workers_img))
     det = evaluate(model, net, DataLoader(BoxSet(root, splits["test"], size, False), batch_size=64, num_workers=args.workers_img,
                                           collate_fn=collate), anchors0, size, family_of, dev, mean, std, False, amp)
     print(f"best step {best_step}: test {test} | detection {det}", flush=True)
@@ -448,7 +749,8 @@ def main() -> None:
                 epochs=args.epochs, steps=step, best_step=best_step, n_unboxed=len(u), hours=round((time.time() - t_start) / 3600, 2),
                 **{f"val_{k}": round(v, 4) for k, v in ck["val"].items()},
                 **{f"test_{k}": round(v, 4) for k, v in test.items() if k != "n"},
-                mosaic=args.mosaic, encounter_mix=args.encounter_mix, encounter_power=args.encounter_power, select=args.select, test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4))
+                mosaic=args.mosaic, encounter_mix=args.encounter_mix, encounter_power=args.encounter_power, select=args.select, test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4),
+                preset=args.preset, size=size)
     log.close()
 
 

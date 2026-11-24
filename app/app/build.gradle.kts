@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.cyberneticmedic.transferner"
         minSdk = 29
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.5"
+        versionCode = 10
+        versionName = "0.6"
         ndk { abiFilters += listOf("arm64-v8a") }        // Pixel 7-9 (D-003); keeps the APK small
     }
     // Every sideloaded APK must carry the same signature, or Android refuses to update the installed app

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.cyberneticmedic.transferner.R
 import io.github.cyberneticmedic.transferner.core.Runtime
+import io.github.cyberneticmedic.transferner.core.Tier
 import io.github.cyberneticmedic.transferner.ml.AccelChoice
 
 @Composable
@@ -76,6 +77,25 @@ fun SettingsScreen(vm: AppViewModel) {
                 OutlinedButton(onClick = { detAcc = AccelChoice.AUTO; vm.rerunDetectorBenchmark() }, shape = RoundedCornerShape(10.dp)) {
                     Text("Measure GPU vs CPU again", color = C.green)
                 }
+                vm.prefs.benchErrors.takeIf { it.isNotBlank() }?.let { Text("Not usable here: $it", fontSize = 12.5.sp, color = C.caution, lineHeight = 17.sp) }
+            }
+
+            SectionLabel("Walk mode", Modifier.padding(top = 6.dp))
+            Card {
+                var dim by remember { mutableStateOf(vm.prefs.walkDim) }
+                var buzz by remember { mutableStateOf(vm.prefs.walkHaptics) }
+                var rec by remember { mutableStateOf(vm.prefs.recordWalks) }
+                Text("Walk mode keeps the camera scanning at ${files?.tuning?.walkFps ?: 4} frames a second with the screen on. When a plant on your forage list " +
+                    "stays in view for about a second, BioCLIP checks the frame, and the phone buzzes twice if it agrees. A long buzz means a genus with a poisonous species is in view.",
+                    fontSize = 13.sp, color = C.ink2, lineHeight = 18.sp)
+                Toggle("Dim the screen", dim) { dim = it; vm.prefs.walkDim = it }
+                Toggle("Buzz on alerts", buzz) { buzz = it; vm.prefs.walkHaptics = it }
+                Toggle("Record walks for training (about 150 MB an hour)", rec) { rec = it; vm.prefs.recordWalks = it }
+                val tiers = vm.prefs.forageTiers
+                val n = files?.forage?.genera?.count { (tiers[it.genus] ?: Tier.of(it.tier)) == Tier.ALERT } ?: 0
+                Text(if (files?.forage == null) "This model bundle has no forage list; update the models to use walk alerts."
+                    else "Forage list: $n genera alert" + if (tiers.isNotEmpty()) " (${tiers.size} changed by you)" else "", fontSize = 13.sp, color = C.muted)
+                if (files?.forage != null) OutlinedButton(onClick = { vm.go(Screen.FORAGE) }, shape = RoundedCornerShape(10.dp)) { Text("Edit the forage list", color = C.green) }
             }
 
             SectionLabel("Species model", Modifier.padding(top = 6.dp))

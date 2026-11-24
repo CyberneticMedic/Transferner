@@ -60,6 +60,46 @@ class Prefs(ctx: Context) {
         get() = sp.getString("pending", null)
         set(v) { sp.edit().putString("pending", v).commit() }
 
+    /** One crash flag per model thread (0.6 review): the detector benchmark and the species load run at the same
+     *  time, and one shared key was overwritten by the other thread. Values: the runtime or step in progress. */
+    var pendingDetector: String?
+        get() = sp.getString("pending_detector", null)
+        set(v) { sp.edit().putString("pending_detector", v).commit() }
+    var pendingSpecies: String?
+        get() = sp.getString("pending_species", null)
+        set(v) { sp.edit().putString("pending_species", v).commit() }
+
+    /** Detector benchmark bookkeeping (D-044): the bundle it ran on (re-run after a model update), the CPU thread
+     *  count it chose (2 or 4), and why a runtime failed (shown and uploaded instead of silently dropped). */
+    var benchBundle: String
+        get() = sp.getString("bench_bundle", "") ?: ""
+        set(v) = sp.edit().putString("bench_bundle", v).apply()
+    var detectorThreads: Int
+        get() = sp.getInt("detector_threads", 0)
+        set(v) = sp.edit().putInt("detector_threads", v).apply()
+    var benchErrors: String
+        get() = sp.getString("bench_errors", "") ?: ""
+        set(v) = sp.edit().putString("bench_errors", v).apply()
+
+    /** Walk mode (D-044): dim the screen while it stays on, buzz on alerts, record frames for training. */
+    var walkDim: Boolean
+        get() = sp.getBoolean("walk_dim", true)
+        set(v) = sp.edit().putBoolean("walk_dim", v).apply()
+    var walkHaptics: Boolean
+        get() = sp.getBoolean("walk_haptics", true)
+        set(v) = sp.edit().putBoolean("walk_haptics", v).apply()
+    var recordWalks: Boolean
+        get() = sp.getBoolean("record_walks", true)
+        set(v) = sp.edit().putBoolean("record_walks", v).apply()
+
+    /** The user's forage tiers, overriding forage.json: genus -> ALERT | SHOW | OFF. */
+    var forageTiers: Map<String, io.github.cyberneticmedic.transferner.core.Tier>
+        get() = (sp.getStringSet("forage_tiers", emptySet()) ?: emptySet()).mapNotNull { e ->
+            val (g, t) = e.split("=").takeIf { it.size == 2 } ?: return@mapNotNull null
+            runCatching { g to io.github.cyberneticmedic.transferner.core.Tier.valueOf(t) }.getOrNull()
+        }.toMap()
+        set(v) = sp.edit().putStringSet("forage_tiers", v.map { "${it.key}=${it.value.name}" }.toSet()).apply()
+
     /** Random per-install suffix for log uploads (tells two phones of the same model apart). */
     val installId: String
         get() = sp.getString("install_id", null) ?: java.util.UUID.randomUUID().toString().take(6).also {

@@ -1,12 +1,18 @@
 package io.github.cyberneticmedic.transferner.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.util.Size
+import android.view.MotionEvent
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -21,17 +27,19 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,7 +47,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,35 +58,42 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size as GSize
-import androidx.compose.ui.layout.boundsInParent
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
-import androidx.compose.ui.text.rememberTextMeasurer
-import kotlin.math.min
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.cyberneticmedic.transferner.R
+import io.github.cyberneticmedic.transferner.core.BoxRules
 import java.io.ByteArrayInputStream
-import kotlin.math.max
 
+private val Amber = Color(0xFFFFC56B)
+private val Leaf = Color(0xFF8BE0A4)
+
+/**
+ * The live screen (D-044 layout): the whole analysed frame is visible. The 3:4 camera frame is fitted between
+ * the top bar and the sheet instead of filling the screen behind them, because the live label and boxes are
+ * computed on the whole frame and 0.5 hid about two thirds of it (off-screen sides, opaque sheet).
+ */
+@SuppressLint("ClickableViewAccessibility")
 @Composable
 fun LiveScreen(vm: AppViewModel) {
     val context = LocalContext.current
@@ -99,11 +113,11 @@ fun LiveScreen(vm: AppViewModel) {
         }
     }
 
-    val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
-    // ~3 MP stills: the species model needs 224 px and the log keeps 1080 px, so full 50 MP captures would
-    // only cost time and memory on budget phones
+    val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER } }
+    // ~3 MP stills: the species model needs 224 px and the log keeps 1080 px. Quality over latency (D-044):
+    // the still is what BioCLIP judges.
     val capture = remember {
-        ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+        ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
             .setResolutionSelector(ResolutionSelector.Builder()
                 .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
                 .setResolutionStrategy(ResolutionStrategy(Size(2048, 1536), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
@@ -111,6 +125,8 @@ fun LiveScreen(vm: AppViewModel) {
             .build()
     }
     var bound by remember { mutableStateOf(false) }
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    var torch by remember { mutableStateOf(false) }
     DisposableEffect(granted) {
         if (!granted) return@DisposableEffect onDispose {}
         val future = ProcessCameraProvider.getInstance(context)
@@ -129,211 +145,289 @@ fun LiveScreen(vm: AppViewModel) {
             analysis.setAnalyzer(vm.detectorExecutor) { vm.analyze(it) }
             provider.unbindAll()
             // fallback: if the phone cannot run preview + analysis + capture together, drop the live analysis
-            bound = try {
-                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, capture); true
+            camera = try {
+                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, capture)
             } catch (e: Exception) {
                 try {
-                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
-                    vm.message.value = "This camera cannot run the live scanner alongside capture; capture still works."
-                    true
+                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture).also {
+                        vm.message.value = "This camera cannot run the live scanner alongside capture; capture still works."
+                    }
                 } catch (e2: Exception) {
                     vm.message.value = "Camera unavailable (${e2.message}). Identify photos from the gallery instead."
-                    false
+                    null
                 }
             }
+            bound = camera != null
         }, ContextCompat.getMainExecutor(context))
-        onDispose { if (future.isDone) future.get().unbindAll() }
+        onDispose { if (future.isDone) future.get().unbindAll(); camera = null; torch = false }
+    }
+    // tap to focus and meter on that spot
+    LaunchedEffect(camera) {
+        val cam = camera ?: return@LaunchedEffect
+        previewView.setOnTouchListener { v, e ->
+            if (e.action == MotionEvent.ACTION_UP) {
+                val point = previewView.meteringPointFactory.createPoint(e.x, e.y)
+                cam.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
+                v.performClick()
+            }
+            true
+        }
+    }
+
+    val walk by vm.walk.collectAsState()
+    // Walk mode keeps the screen on (dimmed) so detection continues in the hand (D-044)
+    val view = LocalView.current
+    val activity = context as? Activity
+    DisposableEffect(walk) {
+        view.keepScreenOn = walk
+        val w = activity?.window
+        if (walk && vm.prefs.walkDim && w != null) w.attributes = w.attributes.apply { screenBrightness = 0.08f }
+        onDispose {
+            view.keepScreenOn = false
+            if (w != null) w.attributes = w.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+        }
+    }
+
+    val takePicture = {
+        capture.takePicture(vm.detectorExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                val buf = image.planes[0].buffer
+                val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
+                val deg = image.imageInfo.rotationDegrees
+                image.close()
+                vm.identify(bytes, deg, fromCamera = true)
+            }
+            override fun onError(e: ImageCaptureException) { vm.message.value = "Capture failed: ${e.message}" }
+        })
     }
 
     val frame by vm.live.collectAsState()
     val boxThr by vm.boxThreshold.collectAsState()
-    var topBarBottom by remember { mutableFloatStateOf(0f) }
-    var sheetTop by remember { mutableFloatStateOf(Float.MAX_VALUE) }
     val measurer = rememberTextMeasurer()
     val models by vm.models.collectAsState()
     val busy by vm.busy.collectAsState()
+    val alert by vm.alert.collectAsState()
+    val second by vm.secondFor.collectAsState()
+    val toxicNow by vm.toxicNow.collectAsState()
+    val alerts by vm.alertsToday.collectAsState()
     val showBoxes = vm.prefs.showBoxes
     val showTimings = vm.prefs.showTimings
+    val f = frame
 
     Box(Modifier.fillMaxSize().background(C.dark)) {
-        if (granted) AndroidView({ previewView }, Modifier.fillMaxSize())
-        else Text("Camera permission is needed for the live view. You can still identify a photo from the gallery.",
-            color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
-
-        // Detector boxes, mapped from the squashed model input onto the FILL_CENTER preview, then clipped to the
-        // part of the screen not covered by the top bar and the bottom sheet. Most live boxes cover nearly the
-        // whole frame (regional test photos: median 93% of the frame), which 0.2 drew off-screen or under the
-        // overlays; such a box is now shown as brackets on the visible area, labelled "plant fills the frame".
-        val f = frame
-        val shown = f?.result?.boxes?.filter { it.score >= boxThr }.orEmpty()
-        if (showBoxes && f != null && shown.isNotEmpty()) {
-            Canvas(Modifier.fillMaxSize()) {
-                val s = max(size.width / f.frameW, size.height / f.frameH)
-                val ox = (size.width - f.frameW * s) / 2
-                val oy = (size.height - f.frameH * s) / 2
-                val k = f.result.size.toFloat()
-                val inset = 14.dp.toPx()
-                val vis = Rect(inset, topBarBottom + inset, size.width - inset, min(sheetTop, size.height) - inset)
-                if (vis.width <= 0f || vis.height <= 0f) return@Canvas
-                val stroke = 3.dp.toPx()
-                val label = { text: String, at: Offset ->
-                    val m = measurer.measure(text, TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold))
-                    val pad = 6.dp.toPx()
-                    drawRoundRect(Color(0xB80A0E0C), at, GSize(m.size.width + 2 * pad, m.size.height + pad), CornerRadius(6.dp.toPx()))
-                    drawText(m, topLeft = Offset(at.x + pad, at.y + pad / 2))
+        Column(Modifier.fillMaxSize()) {
+            // ------------------------------------------------------------------------------ top bar
+            Row(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(if (walk) "Walk mode" else "Transferner", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f))
+                val status = when {
+                    !models.detectorReady -> "Loading models…"
+                    showTimings && f != null -> "%.0f ms · %d box%s · plant %.2f".format(f.modelMs + f.preMs, f.result.boxes.size,
+                        if (f.result.boxes.size == 1) "" else "es", f.result.presence)
+                    walk -> "Scanning"
+                    else -> "Live"
                 }
-                for ((i, b) in shown.withIndex()) {
-                    val r = Rect(ox + b.x0 / k * f.frameW * s, oy + b.y0 / k * f.frameH * s,
-                                 ox + b.x1 / k * f.frameW * s, oy + b.y1 / k * f.frameH * s).intersect(vis)
-                    if (r.width <= 0f || r.height <= 0f) continue
-                    val c = Color.White.copy(alpha = 0.55f + 0.45f * b.score)
-                    if (i == 0 && r.width * r.height >= 0.8f * vis.width * vis.height) {
-                        val L = 34.dp.toPx()
-                        for ((p, q) in listOf(
-                            vis.topLeft to Offset(vis.left + L, vis.top), vis.topLeft to Offset(vis.left, vis.top + L),
-                            vis.topRight to Offset(vis.right - L, vis.top), vis.topRight to Offset(vis.right, vis.top + L),
-                            vis.bottomLeft to Offset(vis.left + L, vis.bottom), vis.bottomLeft to Offset(vis.left, vis.bottom - L),
-                            vis.bottomRight to Offset(vis.right - L, vis.bottom), vis.bottomRight to Offset(vis.right, vis.bottom - L),
-                        )) drawLine(c, p, q, strokeWidth = stroke)
-                        label("Plant fills the frame · ${pct(b.score)}", Offset(vis.left + 10.dp.toPx(), vis.top + 10.dp.toPx()))
-                    } else {
-                        drawRoundRect(c, r.topLeft, r.size, CornerRadius(10.dp.toPx()), style = Stroke(width = stroke))
-                        label("Plant ${pct(b.score)}", Offset(r.left + 6.dp.toPx(), r.top + 6.dp.toPx()))
+                Row(Modifier.background(Color(0x24FFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(8.dp).background(if (models.detectorReady) Color(0xFF7FD69B) else Color(0xFFE0B060), CircleShape))
+                    Text("  $status", color = Color.White, fontSize = 13.sp)
+                }
+                IconButton(onClick = { torch = !torch; camera?.cameraControl?.enableTorch(torch) }, enabled = camera?.cameraInfo?.hasFlashUnit() == true,
+                    modifier = Modifier.padding(start = 4.dp).size(40.dp)) {
+                    Glyph(R.drawable.ic_light, if (torch) "Turn the light off" else "Turn the light on", if (torch) Amber else Color.White)
+                }
+            }
+
+            // ------------------------------------------------------------------------------ camera
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                val pw = min(maxWidth, maxHeight * 0.75f)
+                Box(Modifier.size(pw, pw / 0.75f).align(Alignment.TopCenter)) {
+                    if (granted) AndroidView({ previewView }, Modifier.fillMaxSize())
+                    else Text("Camera permission is needed for the live view. You can still identify a photo from the gallery.",
+                        color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
+
+                    val boxes = f?.result?.boxes.orEmpty()
+                    val win = alert?.window
+                    if (f != null && ((showBoxes && !walk && boxes.isNotEmpty()) || (walk && win != null))) {
+                        Canvas(Modifier.fillMaxSize()) {
+                            val k = f.result.size.toFloat()
+                            val stroke = 3.dp.toPx()
+                            val label = { text: String, at: Offset, bg: Color ->
+                                val m = measurer.measure(text, TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold))
+                                val pad = 6.dp.toPx()
+                                val x = at.x.coerceAtMost(size.width - m.size.width - 2 * pad).coerceAtLeast(0f)
+                                drawRoundRect(bg, Offset(x, at.y), GSize(m.size.width + 2 * pad, m.size.height + pad), CornerRadius(6.dp.toPx()))
+                                drawText(m, topLeft = Offset(x + pad, at.y + pad / 2))
+                            }
+                            if (walk && win != null) {
+                                val r = Rect(win[0] * size.width, win[1] * size.height, win[2] * size.width, win[3] * size.height)
+                                drawRoundRect(Leaf, r.topLeft, r.size, CornerRadius(14.dp.toPx()), style = Stroke(width = stroke))
+                                label("Possible ${alert?.label}", Offset(r.left + 6.dp.toPx(), r.top + 6.dp.toPx()), Color(0xC00A3A1E))
+                            } else for ((i, b) in boxes.withIndex()) {
+                                // model pixels (squashed size x size frame) -> the fitted 3:4 preview
+                                val r = Rect(b.x0 / k * size.width, b.y0 / k * size.height, b.x1 / k * size.width, b.y1 / k * size.height)
+                                val c = Color.White.copy(alpha = 0.55f + 0.45f * b.score)
+                                if (i == 0 && BoxRules.fillsFrame(b, f.result.size)) {
+                                    val inset = 10.dp.toPx()
+                                    val v = Rect(inset, inset, size.width - inset, size.height - inset)
+                                    val L = 34.dp.toPx()
+                                    for ((p, q) in listOf(
+                                        v.topLeft to Offset(v.left + L, v.top), v.topLeft to Offset(v.left, v.top + L),
+                                        v.topRight to Offset(v.right - L, v.top), v.topRight to Offset(v.right, v.top + L),
+                                        v.bottomLeft to Offset(v.left + L, v.bottom), v.bottomLeft to Offset(v.left, v.bottom - L),
+                                        v.bottomRight to Offset(v.right - L, v.bottom), v.bottomRight to Offset(v.right, v.bottom - L),
+                                    )) drawLine(c, p, q, strokeWidth = stroke)
+                                    label("Plant fills the frame · ${pct(b.score)}", Offset(v.left + 10.dp.toPx(), v.top + 10.dp.toPx()), Color(0xB80A0E0C))
+                                } else {
+                                    drawRoundRect(c, r.topLeft, r.size, CornerRadius(10.dp.toPx()), style = Stroke(width = stroke))
+                                    label("Plant ${pct(b.score)}", Offset(r.left + 6.dp.toPx(), r.top + 6.dp.toPx()), Color(0xB80A0E0C))
+                                }
+                            }
+                        }
+                    }
+
+                    // update banner (D-042) and the second-photo banner
+                    val upd by vm.appUpdate.collectAsState()
+                    val bundleNew by vm.bundleUpdate.collectAsState()
+                    val updText = when {
+                        upd is UpdateState.Available || upd is UpdateState.Ready || upd is UpdateState.Downloading ->
+                            "App update available" + if (bundleNew != null) " · new models" else ""
+                        bundleNew != null -> "New models available"
+                        else -> null
+                    }
+                    Column(Modifier.align(Alignment.TopCenter).padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (updText != null && !walk) Pill("$updText · tap to update", Color.White, C.ink) { vm.go(Screen.SETTINGS) }
+                        if (second != null) Pill("Second photo: a different part of the same plant · tap to cancel", Amber, C.ink) { vm.cancelSecondPhoto() }
+                    }
+
+                    // a confirmed walk alert
+                    alert?.let { a ->
+                        Column(
+                            Modifier.align(Alignment.BottomCenter).padding(10.dp).fillMaxWidth()
+                                .background(Color(0xF0102A1B), RoundedCornerShape(16.dp)).padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text("Possible ${a.label}", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                            Text("${a.genus} · live ${pct(a.score)}" + (if (a.bioclip.isNotBlank()) " · BioCLIP: ${a.bioclip}" else ""),
+                                color = Color(0xFFD2E6D9), fontSize = 13.sp)
+                            if (a.note.isNotBlank()) Text(a.note.replaceFirstChar { it.uppercase() }, color = Amber, fontSize = 13.sp, lineHeight = 17.sp)
+                            Text("Capture a clear photo to check it. Nothing here means a plant is safe to eat.", color = Color(0xFFB7C9BD),
+                                fontSize = 12.sp, lineHeight = 16.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                                Pill("Identify", Color.White, C.ink) { if (busy == null && bound) takePicture() }
+                                Pill("Dismiss", Color(0x33FFFFFF), Color.White) { vm.dismissAlert() }
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        Row(
-            Modifier.fillMaxWidth().background(Color(0x9E0A0E0C)).onGloballyPositioned { topBarBottom = it.boundsInParent().bottom }
-                .statusBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Transferner", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            val status = when {
-                !models.detectorReady -> "Loading models…"
-                showTimings && f != null -> "Live · %.0f ms · %d box%s · best %.2f".format(f.modelMs + f.preMs, shown.size,
-                    if (shown.size == 1) "" else "es", f.result.bestScore)
-                else -> "Live"
-            }
-            Row(Modifier.background(Color(0x24FFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(if (models.detectorReady) Color(0xFF7FD69B) else Color(0xFFE0B060), CircleShape))
-                Text("  $status", color = Color.White, fontSize = 13.sp)
-            }
-        }
-
-        // Update banner (D-042): a newer app or model bundle on the home server -> Settings
-        val upd by vm.appUpdate.collectAsState()
-        val bundleNew by vm.bundleUpdate.collectAsState()
-        val updText = when {
-            upd is UpdateState.Available || upd is UpdateState.Ready || upd is UpdateState.Downloading ->
-                "App update available" + if (bundleNew != null) " · new models" else ""
-            bundleNew != null -> "New models available"
-            else -> null
-        }
-        if (updText != null) {
-            Text("$updText · tap to update", color = C.ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = with(androidx.compose.ui.platform.LocalDensity.current) { topBarBottom.toDp() } + 8.dp)
-                    .background(Color.White, RoundedCornerShape(50)).clickable { vm.go(Screen.SETTINGS) }.padding(horizontal = 14.dp, vertical = 8.dp))
-        }
-
-        Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().onGloballyPositioned { sheetTop = it.boundsInParent().top }
-                .background(C.sheet, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
-                .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            val focusMeta = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files?.focus
-            val focus by vm.focus.collectAsState()
-            if (focusMeta != null) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FocusChip("Any plant", focus == null) { vm.setFocus(null) }
-                    focusMeta.categories.forEach { c -> FocusChip(c.label, focus == c.id) { vm.setFocus(if (focus == c.id) null else c.id) } }
+            // ------------------------------------------------------------------------------ sheet
+            Column(
+                Modifier.fillMaxWidth().background(C.sheet, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+                    .navigationBarsPadding().padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                val focusMeta = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files?.focus
+                val focus by vm.focus.collectAsState()
+                if (focusMeta != null && !walk) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FocusChip("Any plant", focus == null) { vm.setFocus(null) }
+                        focusMeta.categories.forEach { c -> FocusChip(c.label, focus == c.id) { vm.setFocus(if (focus == c.id) null else c.id) } }
+                    }
                 }
-            }
-            // Genus when the head is fairly sure, else the family (D-036: on regional photos the shown label
-            // is right 62% of the time this way, against 56% for always showing the genus)
-            val top = f?.result?.genera?.firstOrNull()
-            val sure = top != null && top.p >= 0.5f
-            // Live warning flags (D-038): any live guess whose genus holds a cited toxic species, from 2%;
-            // false positives preferred. The check is the capture; this is a heads-up.
-            val warn = f?.result?.warnings.orEmpty()
-            if (warn.isNotEmpty()) {
-                Row(Modifier.fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Glyph(R.drawable.ic_warning, null, C.caution, 18)
-                    Text(
-                        (if (warn.any { it.serious }) "Possibly poisonous: " else "Possibly mildly toxic: ") +
-                            warn.take(3).joinToString(", ") { "${it.genus} ${pct(it.p)}" } + " · capture to check",
-                        color = C.caution, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 17.sp)
+                // Live warning flags (D-038): any live guess whose genus holds a cited toxic species, from 2%;
+                // false positives preferred. Held for a few frames (D-044). The check is the capture.
+                val warn = f?.result?.warnings.orEmpty()
+                if (warn.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().background(C.cautionSoft, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Glyph(R.drawable.ic_warning, null, C.caution, 18)
+                        Text(
+                            (if (warn.any { it.serious }) "Possibly poisonous: " else "Possibly mildly toxic: ") +
+                                warn.take(3).joinToString(", ") { "${it.genus} ${pct(it.p)}" } + " · capture to check",
+                            color = C.caution, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 17.sp)
+                    }
                 }
-            }
-            val focusLabel = focusMeta?.categories?.firstOrNull { it.id == focus }?.label?.lowercase()
-            SectionLabelDark((if (top == null || sure) "Live guess · whole frame" else "Live guess · family (genus unsure)") +
-                (focusLabel?.let { " · focus $it" } ?: ""))
-            Row(verticalAlignment = Alignment.Bottom) {
-                if (top == null || sure) {
-                    Text(top?.genus ?: "—", style = Scientific, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text(top?.let { pct(it.p) } ?: "", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                val files = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files
+                val top = f?.result?.genera?.firstOrNull()
+                // plant-presence gate (D-044): below it the frame does not look like any known plant
+                val plant = f == null || f.result.presence >= (files?.tuning?.presenceBoxes ?: 0f)
+                if (walk) {
+                    // forage chip from the accumulated score (no haptic below the alert threshold)
+                    val fs = f?.forage
+                    val chipMin = files?.tuning?.chipMin ?: 0.3f
+                    val byIdx = remember(files) { files?.forage?.genera?.associateBy { it.g } }
+                    val chip = when {
+                        fs == null -> null
+                        f.forageSmoothed >= chipMin && fs.alertGenus >= 0 -> byIdx?.get(fs.alertGenus)
+                        fs.show >= chipMin && fs.showGenus >= 0 -> byIdx?.get(fs.showGenus)
+                        else -> null
+                    }
+                    SectionLabelDark("Scanning for forage · ${alerts.count { it.confirmed }} alert${if (alerts.count { it.confirmed } == 1) "" else "s"} today" +
+                        if (toxicNow) " · poisonous genus in view" else "")
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(chip?.let { "Maybe ${it.label.ifBlank { it.genus }}" } ?: if (!plant) "No plant in view" else "Nothing on your list",
+                            color = if (chip != null) Leaf else Color.White, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        if (top != null) Text("${top.genus} ${pct(top.p)}", style = Scientific, color = C.onDark2, fontSize = 13.sp)
+                    }
+                    chip?.note?.takeIf { it.isNotBlank() }?.let {
+                        Text("${chip.genus}: $it", color = C.onDark2, fontSize = 12.sp, lineHeight = 16.sp)
+                    }
                 } else {
-                    Text(f!!.result.topFamily, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text(pct(f.result.topFamilyP), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                    // genus when the head is fairly sure, else the family (D-036)
+                    val sure = top != null && top.p >= 0.5f
+                    SectionLabelDark(if (!plant) "Live guess · no plant in view?" else if (top == null || sure) "Live guess · whole frame" else "Live guess · family (genus unsure)")
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        if (top == null || sure) {
+                            Text(top?.genus ?: "—", style = Scientific, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text(top?.let { pct(it.p) } ?: "", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                        } else {
+                            Text(f!!.result.topFamily, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text(pct(f.result.topFamilyP), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        f?.result?.genera?.drop(if (sure) 1 else 0)?.take(3)?.forEach {
+                            Text("${it.genus} ${pct(it.p)}", style = Scientific, color = Color(0xFFE4EBE6), fontSize = 13.sp,
+                                modifier = Modifier.background(Color(0x1AFFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 4.dp))
+                        }
+                    }
+                    if (showTimings && showBoxes) {
+                        // Plant-score sensitivity (D-039): right = more sensitive (lower score needed for a box)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("Box sensitivity", color = C.onDark2, fontSize = 13.sp)
+                            Slider(
+                                value = MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - boxThr,
+                                onValueChange = { vm.setBoxThreshold(MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - it) },
+                                valueRange = MIN_BOX_THRESHOLD..MAX_BOX_THRESHOLD,
+                                colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color(0x40FFFFFF)),
+                                modifier = Modifier.weight(1f).height(28.dp)
+                                    .semantics { contentDescription = "Box sensitivity: boxes shown from plant score %.2f".format(boxThr) },
+                            )
+                            Text("≥ %.2f".format(boxThr), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
-            }
-            Text(
-                when {
-                    f == null || top == null -> "Point the camera at a plant"
-                    sure -> "${f.result.topFamily} · family ${pct(f.result.topFamilyP)}"
-                    else -> "Genus guesses:"
-                },
-                color = Color(0xFFD2DBD5), fontSize = 14.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                f?.result?.genera?.drop(if (sure) 1 else 0)?.take(3)?.forEach {
-                    Text("${it.genus} ${pct(it.p)}", style = Scientific, color = Color(0xFFE4EBE6), fontSize = 13.sp,
-                        modifier = Modifier.background(Color(0x1AFFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp))
-                }
-            }
-            if (showTimings && showBoxes) {
-                // Plant-score sensitivity (D-039): right = more sensitive (lower score needed for a box)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Box sensitivity", color = C.onDark2, fontSize = 13.sp)
-                    Slider(
-                        value = MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - boxThr,
-                        onValueChange = { vm.setBoxThreshold(MAX_BOX_THRESHOLD + MIN_BOX_THRESHOLD - it) },
-                        valueRange = MIN_BOX_THRESHOLD..MAX_BOX_THRESHOLD,
-                        colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color(0x40FFFFFF)),
-                        modifier = Modifier.weight(1f).height(32.dp)
-                            .semantics { contentDescription = "Box sensitivity: boxes shown from plant score %.2f".format(boxThr) },
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                    if (walk) RoundButton(R.drawable.ic_flag, "Mark a plant the app missed") { vm.markMissed() }
+                    else RoundButton(R.drawable.ic_list, "Observation log") { vm.go(Screen.LOG) }
+                    RoundButton(R.drawable.ic_photo, "Identify a photo from the gallery") {
+                        pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }
+                    Box(
+                        Modifier.size(70.dp).border(4.dp, Color.White, CircleShape).padding(8.dp).background(Color.White, CircleShape)
+                            .semantics { contentDescription = "Capture and identify"; role = Role.Button }
+                            .clickable(enabled = busy == null && granted && bound) { takePicture() },
                     )
-                    Text("≥ %.2f".format(boxThr), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    RoundButton(R.drawable.ic_walk, if (walk) "Stop walk mode" else "Start walk mode", if (walk) Leaf else Color.White,
+                        if (walk) Color(0x408BE0A4) else Color(0x1FFFFFFF)) { vm.setWalk(!walk) }
+                    RoundButton(R.drawable.ic_tune, "Models and settings") { vm.go(Screen.SETTINGS) }
                 }
-            } else {
-                Text("Live guesses are genus-level and rough. Capture a still for a species match.", color = C.onDark2, fontSize = 13.sp, lineHeight = 18.sp)
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                RoundButton(R.drawable.ic_list, "Observation log") { vm.go(Screen.LOG) }
-                RoundButton(R.drawable.ic_photo, "Identify a photo from the gallery") {
-                    pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                }
-                Box(
-                    Modifier.size(78.dp).border(4.dp, Color.White, CircleShape).padding(9.dp).background(Color.White, CircleShape)
-                        .semantics { contentDescription = "Capture and identify"; role = Role.Button }
-                        .clickable(enabled = busy == null && granted && bound) {
-                            capture.takePicture(vm.detectorExecutor, object : ImageCapture.OnImageCapturedCallback() {
-                                override fun onCaptureSuccess(image: ImageProxy) {
-                                    val buf = image.planes[0].buffer
-                                    val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
-                                    val deg = image.imageInfo.rotationDegrees
-                                    image.close()
-                                    vm.identify(bytes, deg)
-                                }
-                                override fun onError(e: ImageCaptureException) { vm.message.value = "Capture failed: ${e.message}" }
-                            })
-                        },
-                )
-                RoundButton(R.drawable.ic_tune, "Models and settings") { vm.go(Screen.SETTINGS) }
             }
         }
         if (busy != null) {
@@ -348,10 +442,16 @@ fun LiveScreen(vm: AppViewModel) {
 }
 
 @Composable
+private fun Pill(text: String, bg: Color, fg: Color, onClick: () -> Unit) =
+    Text(text, color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.background(bg, RoundedCornerShape(50)).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp)
+            .semantics { role = Role.Button })
+
+@Composable
 private fun FocusChip(label: String, on: Boolean, onClick: () -> Unit) {
     Text(label, color = if (on) C.ink else Color.White, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
         modifier = Modifier.background(if (on) Color.White else Color(0x24FFFFFF), RoundedCornerShape(50))
-            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp)
+            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 6.dp)
             .semantics { role = Role.Button; contentDescription = "Focus: $label" + if (on) ", selected" else "" })
 }
 
@@ -360,8 +460,8 @@ private fun SectionLabelDark(text: String) =
     Text(text.uppercase(), color = Color(0xFFB7C3BB), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
 
 @Composable
-private fun RoundButton(icon: Int, desc: String, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(52.dp).background(Color(0x1FFFFFFF), CircleShape)) {
-        Glyph(icon, desc, Color.White)
+private fun RoundButton(icon: Int, desc: String, tint: Color = Color.White, bg: Color = Color(0x1FFFFFFF), onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(50.dp).background(bg, CircleShape)) {
+        Glyph(icon, desc, tint)
     }
 }

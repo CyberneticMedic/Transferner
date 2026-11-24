@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.github.cyberneticmedic.transferner.ui.AppViewModel
+import io.github.cyberneticmedic.transferner.ui.ForageScreen
 import io.github.cyberneticmedic.transferner.ui.LiveScreen
 import io.github.cyberneticmedic.transferner.ui.LogScreen
 import io.github.cyberneticmedic.transferner.ui.ResultScreen
@@ -57,6 +58,7 @@ private fun App(vm: AppViewModel, exit: () -> Unit) {
             Screen.SPECIES -> SpeciesScreen(vm)
             Screen.LOG -> LogScreen(vm)
             Screen.SETTINGS -> SettingsScreen(vm)
+            Screen.FORAGE -> ForageScreen(vm)
         }
         SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 180.dp))
     }

@@ -13,6 +13,13 @@ Layout under $TRANSFERNER_DATA/bundle/ (served as is by scripts/serve_bundle.sh)
   V/catalog.json                    per species: names, genus, family, look-alike groups, cited trait rows,
                                     thumbnail and its attribution
   V/thumbs/<class_idx>.jpg          one CC0 / CC BY 4.0 field photo per species where one exists (D-019)
+  V/text_emb.bin                    BioCLIP text embeddings of the species names, float16 [n, 1024]: the capture
+                                    "not in my list" score (D-044); head.json names it (text_file, text_dim)
+  V/forage.json                     walk-mode targets (D-044): every detector genus with a cited edible or
+                                    conditional row, its default tier (data/forage/default_tiers.csv: alert, show
+                                    or off; unlisted genera off) and weight e_g = share of the genus' regional
+                                    sightings that are species with such a row
+  V/tuning.json                     live and capture thresholds (D-044); presence gate from eval/presence_gate.py
 
 Toxicity comes only from cited trait rows (D-004/D-005/D-027), never from species.parquet's is_toxic flag
 (it disagrees with the trait table, e.g. Delphinium tricorne). Runs in the CPU export venv:
@@ -228,6 +235,53 @@ def variant_check(root: Path, model: Path, head: dict, head_bin: Path, uuid: str
     return {"top5": [[int(k), round(float(p[k]), 4)] for k in top], "cos_to_gpu_variant": cos, "x86_ms_4_threads": round(ms)}
 
 
+def forage(root: Path, repo: Path, genera: list[str]) -> dict:
+    """Walk-mode targets (D-044; audit edible_targeting_app-01/03): each detector genus holding a species with a
+    cited edible or conditional row, weighted by that species group's share of the genus' regional sightings."""
+    sp = pd.read_parquet(root / "manifests/species.parquet", columns=["gbif_taxon_key", "scientific_name", "genus", "common_name"])
+    tr = pd.read_csv(repo / "data/traits/species_traits.csv")
+    ed = set(tr[tr.category.isin(["edible", "conditional"])].scientific_name)
+    pr = pd.read_parquet(root / "manifests/priors_state_month.parquet").groupby("gbif_taxon_key")["count"].sum()
+    sp["n"] = sp.gbif_taxon_key.map(pr).fillna(0) + 1
+    sp["ed"] = sp.scientific_name.isin(ed)
+    tiers = pd.read_csv(repo / "data/forage/default_tiers.csv", keep_default_na=False).set_index("genus")
+    gi = {g: i for i, g in enumerate(genera)}
+    out = []
+    for g, d in sp.groupby("genus"):
+        if g not in gi or not d.ed.any():
+            continue
+        row = tiers.loc[g] if g in tiers.index else None
+        common = d[d.ed].sort_values("n", ascending=False).common_name.dropna()
+        # genera the curated list leaves out default to off: several are mostly toxic (Hydrangea, Trillium,
+        # Lathyrus) and would otherwise read as "Maybe <name>" chips (0.6 review); the user can switch them on
+        out.append({"g": gi[g], "genus": g, "tier": row.tier if row is not None else "off",
+                    "weight": round(float(d.n[d.ed].sum() / d.n.sum()), 4),
+                    "label": (row.label if row is not None and row.label else (common.iloc[0] if len(common) else g)).strip(),
+                    "note": row.note if row is not None else ""})
+    missing = sorted(set(tiers.index) - {o["genus"] for o in out})
+    assert not missing, f"default_tiers.csv names genera without a cited edible row in the detector: {missing}"
+    tally = pd.Series([o["tier"] for o in out]).value_counts().to_dict()
+    print(f"forage: {len(out)} genera {tally}", flush=True)
+    return {"genera": sorted(out, key=lambda o: o["genus"]), "source": "data/traits/species_traits.csv (NC State Extension "
+            "Plant Toolbox), regional GBIF sightings, data/forage/default_tiers.csv"}
+
+
+def tuning(det_dir: Path) -> dict:
+    """Thresholds the app reads from tuning.json (D-044). The presence gate comes from eval/presence_gate.py for
+    this detector; without it the gate is off. The rest are the read-only audit's values (app Tuning defaults)."""
+    t = {"presence_boxes": 0.0, "presence_warn": 0.0, "secondary_offset": 0.15, "secondary_floor": 0.4, "containment": 0.8,
+         "label_tau_s": 0.56, "warn_hold_frames": 4, "walk_fps": 4, "alert_tau_s": 1.0, "alert_enter": 0.5, "alert_hold_s": 0.75,
+         "alert_exit": 0.35, "chip_min": 0.3, "refractory_s": 600, "toxic_haptic": 0.3, "toxic_hold_s": 1.0, "verify_genus_p": 0.25,
+         "text_min": 0.561, "banner_sum": 0.002, "banner_strong": 0.02, "conditional_min": 0.02, "species_min": 0.8, "genus_min": 0.8}
+    gate = det_dir / "presence.json"
+    if gate.exists():
+        g = json.loads(gate.read_text())
+        t.update(presence_boxes=g["presence_boxes"], presence_warn=g["presence_warn"])
+        t["presence_check"] = g.get("check", {})
+    print(f"tuning: presence gate boxes {t['presence_boxes']}, warnings {t['presence_warn']}", flush=True)
+    return t
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="0.2")
@@ -239,6 +293,7 @@ def main() -> None:
     ap.add_argument("--goldens", default="", help="write the app's unit-test goldens to this directory")
     ap.add_argument("--no-publish", action="store_true", help="build the version directory but leave latest.json (staging)")
     ap.add_argument("--golden-uuid", default="gbif-6178854992-1")
+    ap.add_argument("--text-emb", default="artifacts/text_emb.npy", help="species-name embeddings for the open-set score ('' = none)")
     args = ap.parse_args()
     root = data_root()
     repo = Path(__file__).resolve().parents[3]
@@ -266,7 +321,15 @@ def main() -> None:
     head = {"file": "head.bin", "n": int(W.shape[0]), "dim": int(W.shape[1]), "dtype": "float16",
             "scale": float(pr["scale"]), "temperature": float((root / args.temperature).read_text()),
             "bias": [float(v) for v in pr["b"]], "probe": args.probe}
+    if args.text_emb:
+        t = np.load(root / args.text_emb).astype(np.float32)
+        assert t.shape[0] == head["n"], (t.shape, head["n"])
+        t /= np.linalg.norm(t, axis=1, keepdims=True)
+        t.astype("<f2").tofile(out / "text_emb.bin")
+        head.update(text_file="text_emb.bin", text_dim=int(t.shape[1]), text_source=args.text_emb)
     (out / "head.json").write_text(json.dumps(head))
+    (out / "forage.json").write_text(json.dumps(forage(root, repo, side["genera"])))
+    (out / "tuning.json").write_text(json.dumps(tuning((root / args.detector).parent)))
 
     variants, groups = [], {}
     for v in (VARIANTS[k] for k in args.variants.split(",")):

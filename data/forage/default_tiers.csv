@@ -1,0 +1,128 @@
+genus,tier,label,note
+Vitis,alert,wild grape,fruit
+Passiflora,alert,maypop,fruit
+Asimina,alert,pawpaw,fruit
+Diospyros,alert,persimmon,fruit when soft-ripe
+Rubus,alert,blackberry / raspberry,fruit
+Vaccinium,alert,blueberry,fruit
+Gaylussacia,alert,huckleberry,fruit
+Prunus,alert,wild plum / cherry,fruit only; pits and leaves are toxic
+Morus,alert,mulberry,ripe fruit; unripe fruit and sap irritate
+Sambucus,alert,elderberry,cooked ripe berries and flowers; other parts toxic
+Amelanchier,alert,serviceberry,fruit
+Aronia,alert,chokeberry,fruit
+Crataegus,alert,hawthorn,fruit; seeds are toxic
+Malus,alert,crabapple / apple,fruit; seeds are toxic
+Pyrus,alert,pear,fruit
+Elaeagnus,alert,autumn olive,fruit
+Celtis,alert,hackberry,fruit
+Gaultheria,alert,wintergreen,fruit and leaves for tea
+Rhus,alert,sumac,red berry clusters for tea; white-berried poison sumac is a different genus
+Opuntia,alert,prickly pear,fruit and pads after removing spines
+Physalis,alert,groundcherry,ripe fruit only
+Ficus,alert,fig,cultivated perennial; ripe fruit
+Punica,alert,pomegranate,cultivated perennial; fruit
+Feijoa,alert,pineapple guava,cultivated perennial; fruit and flowers
+Citrus,alert,citrus,cultivated perennial; fruit
+Ziziphus,alert,jujube,cultivated perennial; fruit
+Actinidia,alert,kiwi,cultivated perennial; fruit
+Butia,alert,jelly palm,cultivated perennial; fruit
+Chaenomeles,alert,flowering quince,cultivated perennial; cooked fruit
+Carya,alert,hickory / pecan,nuts
+Juglans,alert,walnut,nuts
+Castanea,alert,chestnut,nuts
+Corylus,alert,hazelnut,nuts
+Fagus,alert,beech,nuts
+Apios,alert,groundnut,tubers
+Helianthus,alert,sunflower / sunchoke,Jerusalem artichoke tubers
+Sagittaria,alert,arrowhead,tubers
+Typha,alert,cattail,shoots and rhizomes
+Allium,alert,wild onion / ramps,check for death camas: no onion smell means no
+Asparagus,alert,asparagus,cultivated perennial; young shoots
+Urtica,alert,stinging nettle,cooked leaves
+Laportea,alert,wood nettle,cooked leaves
+Chenopodium,alert,lamb's quarters,leaves
+Portulaca,alert,purslane,leaves and stems
+Hemerocallis,alert,daylily,buds and tubers; some people react
+Matteuccia,alert,ostrich fern,cooked fiddleheads only
+Lindera,alert,spicebush,berries and twigs as spice
+Medeola,show,Indian cucumber root,"root; uncommon, harvest lightly"
+Quercus,show,oak,acorns after leaching tannins
+Pinus,show,pine,nuts and needle tea; some pines are toxic to livestock
+Pistacia,show,pistachio,seed
+Ginkgo,show,ginkgo,cooked seeds in small amounts; fruit pulp irritates
+Gymnocladus,show,Kentucky coffeetree,seeds only after roasting; raw is toxic
+Podophyllum,show,mayapple,only the fully ripe fruit; all other parts are poisonous
+Sassafras,show,sassafras,tea; safrole is a carcinogen
+Dioscorea,show,wild yam,some yams are toxic raw
+Cichorium,show,chicory,roots and leaves
+Daucus,show,wild carrot,poison hemlock and water hemlock look alike
+Pastinaca,show,wild parsnip,sap burns skin in sunlight
+Canna,show,canna,cooked rhizomes
+Colocasia,show,taro,thoroughly cooked only
+Cardamine,show,toothwort / bittercress,leaves and roots
+Claytonia,show,spring beauty,corms and leaves
+Stellaria,show,chickweed,leaves
+Alliaria,show,garlic mustard,leaves
+Lamium,show,deadnettle,leaves
+Reynoutria,show,Japanese knotweed,young shoots
+Polygonatum,show,Solomon's seal,young shoots; berries are toxic
+Cnidoscolus,show,tread-softly,root; stinging hairs
+Yucca,show,yucca,flowers
+Smilax,show,greenbrier,young shoots
+Taraxacum,show,dandelion,leaves and roots
+Plantago,show,plantain,leaves
+Trifolium,show,clover,flowers
+Viola,show,violet,leaves and flowers
+Oxalis,show,wood sorrel,leaves in moderation
+Rumex,show,dock / sorrel,leaves in moderation
+Lactuca,show,wild lettuce,young leaves
+Cercis,show,redbud,flowers
+Robinia,show,black locust,flowers only; the rest is toxic
+Tilia,show,linden,flowers and young leaves
+Hibiscus,show,hibiscus,flowers
+Monarda,show,bee balm,tea
+Mentha,show,mint,tea
+Pycnanthemum,show,mountain mint,tea
+Nepeta,show,catnip,tea
+Agastache,show,anise hyssop,tea
+Hamamelis,show,witch hazel,medicinal
+Lonicera,show,honeysuckle,flower nectar only; berries of many are toxic
+Acer,show,maple,sap and seeds
+Betula,show,birch,sap and tea
+Tsuga,show,hemlock tree,needle tea (not poison hemlock)
+Rosa,show,wild rose,hips
+Viburnum,show,viburnum,ripe fruit of some species
+Cornus,show,dogwood,fruit of some species
+Potentilla,show,cinquefoil / mock strawberry,fruit
+Rhaphiolepis,show,Indian hawthorn,cooked fruit
+Akebia,show,chocolate vine,fruit
+Sabal,show,palmetto,fruit and heart
+Persea,show,avocado / redbay,leaves as spice
+Chionanthus,show,fringetree,fruit
+Salvia,show,sage / rosemary,leaves
+Galium,show,cleavers,young leaves
+Oenothera,show,evening primrose,roots and leaves
+Abelmoschus,off,okra,annual crop
+Arachis,off,peanut,annual crop
+Avena,off,oat,annual crop
+Borago,off,borage,annual herb
+Brassica,off,mustard / cabbage,annual crop
+Calendula,off,calendula,annual flower
+Celosia,off,celosia,annual flower
+Citrullus,off,watermelon,annual crop
+Coriandrum,off,coriander,annual herb
+Cucumis,off,cucumber / melon,annual crop
+Cucurbita,off,squash,annual crop
+Glycine,off,soybean,annual crop
+Hordeum,off,barley,annual crop
+Lablab,off,hyacinth bean,annual crop
+Lagenaria,off,bottle gourd,annual crop
+Ocimum,off,basil,annual herb
+Raphanus,off,radish,annual crop
+Secale,off,rye,annual crop
+Triticum,off,wheat,annual crop
+Tropaeolum,off,nasturtium,annual flower
+Zea,off,corn,annual crop
+Fagopyrum,off,buckwheat,annual crop
+Sorghum,off,sorghum,annual crop

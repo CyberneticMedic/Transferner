@@ -35,7 +35,13 @@ data class DetectorOutputs(
     @SerialName("image_logits") val imageLogits: TensorInfo,
     val objectness: TensorInfo,
     val boxes: TensorInfo,
+    /** (1, 9, G) whole-frame head on 9 overlapping windows (bundle 0.6+, D-044); null on older detectors. */
+    @SerialName("region_logits") val regionLogits: TensorInfo? = null,
 )
+
+/** The windows behind region_logits, as [x0, y0, x1, y1] fractions of the squashed frame, row-major. */
+@Serializable
+data class Regions(val grid: List<Int>, val windows: List<List<Float>>)
 
 @Serializable
 data class BoxCoder(val weights: List<Float>, val clip: Float)
@@ -62,6 +68,7 @@ data class DetectorMeta(
     val genera: List<String>,
     val families: List<String>,
     @SerialName("family_of") val familyOf: List<Int>,
+    val regions: Regions? = null,
 )
 
 @Serializable
@@ -96,6 +103,9 @@ data class HeadMeta(
     val scale: Float,
     val temperature: Float,
     val bias: List<Float>,
+    /** BioCLIP text embeddings of the species names, fp16 n x dim (bundle 0.6+, D-044); null on older bundles. */
+    @SerialName("text_file") val textFile: String? = null,
+    @SerialName("text_dim") val textDim: Int = 0,
 )
 
 @Serializable

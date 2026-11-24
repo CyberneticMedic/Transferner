@@ -17,7 +17,15 @@ import io.github.cyberneticmedic.transferner.core.Plan
 import io.github.cyberneticmedic.transferner.core.Runtime
 import io.github.cyberneticmedic.transferner.core.Species
 import io.github.cyberneticmedic.transferner.core.SpeciesHead
+import io.github.cyberneticmedic.transferner.core.AlertAccumulator
+import io.github.cyberneticmedic.transferner.core.CaptureAnalysis
+import io.github.cyberneticmedic.transferner.core.CaptureRules
+import io.github.cyberneticmedic.transferner.core.ForageScorer
+import io.github.cyberneticmedic.transferner.core.HoldDetector
+import io.github.cyberneticmedic.transferner.core.TextIndex
+import io.github.cyberneticmedic.transferner.core.Tier
 import io.github.cyberneticmedic.transferner.core.cautionCandidates
+import io.github.cyberneticmedic.transferner.data.WalkRecorder
 import io.github.cyberneticmedic.transferner.data.BundleFiles
 import io.github.cyberneticmedic.transferner.data.BundleRepository
 import io.github.cyberneticmedic.transferner.data.DeviceProfile
@@ -32,6 +40,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -40,7 +49,7 @@ import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 
-enum class Screen { SETUP, LIVE, RESULT, SPECIES, LOG, SETTINGS }
+enum class Screen { SETUP, LIVE, RESULT, SPECIES, LOG, SETTINGS, FORAGE }
 
 const val MIN_BOX_THRESHOLD = 0.05f
 const val MAX_BOX_THRESHOLD = 0.9f
@@ -71,17 +80,41 @@ data class ModelStatus(
     val error: String? = null,
 )
 
-data class LiveFrame(val result: LiveResult, val frameW: Int, val frameH: Int, val modelMs: Float, val preMs: Float)
+data class LiveFrame(val result: LiveResult, val frameW: Int, val frameH: Int, val modelMs: Float, val preMs: Float,
+                     val forage: ForageScorer.Score? = null, val forageSmoothed: Float = 0f)
 
 data class IdResult(
     val photo: Bitmap,
     val jpeg: ByteArray,
     val top: List<Candidate>,
-    val alsoPossible: List<Candidate> = emptyList(),   // flagged species outside the top 5 (D-038)
     val modelMs: Float,
     val totalMs: Float,
     val fromLog: Boolean = false,
     val saved: Boolean = false,
+    /** Levels, caution banner and second-photo trigger (D-044); null for entries reopened from the log. */
+    val analysis: CaptureAnalysis? = null,
+    val text: Float? = null,
+    val secondPhoto: Bitmap? = null,
+    val secondJpeg: ByteArray? = null,
+    /** The live model's last frames before this capture, as a JSON array (camera captures only). */
+    val liveRing: String = "[]",
+    /** Reopened from the log: the caution flag saved with it (its banner may have come from outside the top 5). */
+    val storedCaution: Boolean = false,
+)
+
+/** A walk alert (D-044): the live model's forage score crossed its threshold and BioCLIP was asked to confirm. */
+data class WalkAlert(
+    val timeMs: Long,
+    val clock: String,
+    val genus: String,
+    val label: String,
+    val score: Float,
+    val confirmed: Boolean,
+    val bioclip: String,                         // BioCLIP's top species and its probability, or "" if not run
+    val genusP: Float,                           // BioCLIP probability summed over the alerted genus
+    val window: List<Float>?,                    // the region window ([x0, y0, x1, y1] fractions) or null
+    val frame: String?,                          // saved walk frame, if recording
+    val note: String = "",                       // forage.json note: which part, and its cautions
 )
 
 /**
@@ -134,6 +167,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Live focus chip (D-037): a growth-form id from focus.json, or null for no focus. */
     val focus = MutableStateFlow<String?>(null)
+
+    // ------------------------------------------------------------------------------- walk mode (D-044)
+    val walk = MutableStateFlow(false)
+    val alert = MutableStateFlow<WalkAlert?>(null)          // the latest confirmed alert, shown until dismissed
+    val alertsToday = MutableStateFlow<List<WalkAlert>>(emptyList())
+    val toxicNow = MutableStateFlow(false)
+    val recorder = WalkRecorder.of(app)
+    @Volatile private var scorer: ForageScorer? = null
+    @Volatile private var accumulator: AlertAccumulator? = null
+    @Volatile private var toxicHold: HoldDetector? = null
+    @Volatile private var verifying = false
+    private var lastSavedFrame = 0L
+    @Volatile private var lastUpright: Bitmap? = null
+    /** Capture rules (levels, banner, second photo) for the installed bundle. */
+    @Volatile var rules: CaptureRules? = null
+        private set
+    /** Set while the user takes a second photo of the same plant for [secondFor]. */
+    val secondFor = MutableStateFlow<IdResult?>(null)
 
     init {
         viewModelScope.launch {
@@ -226,8 +277,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A native crash leaves prefs.pending set: step the plan down instead of crashing the same way again. */
     private fun recoverFromCrash(files: BundleFiles?) {
-        val pending = prefs.pending ?: return
-        prefs.pending = null
+        val legacy = prefs.pending
+        val det = prefs.pendingDetector
+        val spc = prefs.pendingSpecies
+        prefs.pending = null; prefs.pendingDetector = null; prefs.pendingSpecies = null
+        // the species model is the heavy one: if both flags were set, it is the likelier cause
+        val pending = spc?.let { "species:$it" } ?: det?.let { "detector:$it" } ?: legacy ?: return
         when {
             pending.startsWith("detector:") -> {
                 prefs.detectorAccel = AccelChoice.CPU
@@ -307,8 +362,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Forage tiers from the bundle and the user's overrides; rebuilt when the user edits them. */
+    fun rebuildForage(files: BundleFiles? = (bundle.value as? BundleState.Ready)?.files) {
+        val f = files ?: return
+        scorer = f.forage?.let { ForageScorer(it, f.detector.genera.size, prefs.forageTiers) }
+        accumulator = AlertAccumulator(f.tuning)
+        toxicHold = HoldDetector(f.tuning.toxicHaptic, f.tuning.toxicHoldS, f.tuning.alertTauS, 120f)
+    }
+
+    fun setForageTier(genus: String, tier: Tier) {
+        prefs.forageTiers = prefs.forageTiers + (genus to tier)
+        rebuildForage()
+    }
+
+    fun resetForageTiers() { prefs.forageTiers = emptyMap(); rebuildForage() }
+
     fun loadModels(files: BundleFiles) {
         val p = plan.value ?: DevicePlanner.plan(device.value ?: DeviceProfile.read(getApplication(), null), files.speciesModels.variants).also { setPlan(it) }
+        // capture rules belong to this bundle and must not wait for (or depend on) the live detector
+        val idx = io.github.cyberneticmedic.transferner.core.WarningIndex(files.catalog)
+        warnIndex = idx
+        rules = CaptureRules(files.catalog, idx, files.tuning)
+        rebuildForage(files)
         models.value = ModelStatus(detector = "loading…", species = "loading…")
         if (speciesLoaded.isCompleted) speciesLoaded = CompletableDeferred()
         detectorExecutor.execute { loadDetector(files, p) }
@@ -321,45 +396,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             detector?.close(); detector = null
             val choice = prefs.detectorAccel
             val gpuOk = device.value?.gpuAvailable == true
+            // a new model bundle gets a fresh benchmark (448 px costs about twice the 320 px graph)
+            if (prefs.benchBundle != files.manifest.version) { prefs.detectorBenchRuntime = null; prefs.detectorThreads = 0 }
             var bench = prefs.detectorBenchRuntime
             if (choice == AccelChoice.AUTO && bench == null) {
-                val times = mutableMapOf<Runtime, Float>()
-                for (r in if (gpuOk) listOf(Runtime.CPU, Runtime.GPU) else listOf(Runtime.CPU)) {
-                    models.value = models.value.copy(detector = "measuring ${r.name}…")
-                    prefs.pending = "detector:${r.name}"
+                val times = mutableMapOf<String, Float>()
+                val errors = mutableListOf<String>()
+                val cores = device.value?.cores ?: 4
+                val trials = listOf(Runtime.CPU to 2) + (if (cores >= 6) listOf(Runtime.CPU to 4) else emptyList()) +
+                    (if (gpuOk) listOf(Runtime.GPU to 2) else emptyList())
+                for ((r, th) in trials) {
+                    models.update { it.copy(detector = "measuring ${r.name}${if (r == Runtime.CPU) " ×$th" else ""}…") }
+                    prefs.pendingDetector = r.name
                     try {
-                        LiveDetector(files.dir, files.detector, r, p.detectorThreads, environment()).use { d -> times[r] = benchmark(d) }
+                        LiveDetector(files.dir, files.detector, r, th, environment(), files.tuning).use { d -> times["${r.name}:$th"] = benchmark(d) }
                     } catch (e: Exception) {
-                        times.remove(r)
+                        errors += "${r.name}: ${e.message ?: e.javaClass.simpleName}"
                     } finally {
-                        prefs.pending = null
+                        prefs.pendingDetector = null
                     }
                 }
-                bench = times.minByOrNull { it.value }?.key ?: Runtime.CPU
+                val bestKey = times.minByOrNull { it.value }?.key ?: "CPU:2"
+                bench = Runtime.valueOf(bestKey.substringBefore(':'))
                 prefs.detectorBenchRuntime = bench
-                prefs.detectorBench = times.entries.joinToString(", ") { "${it.key.name} %.0f ms".format(it.value) }
+                prefs.detectorThreads = if (bench == Runtime.CPU) bestKey.substringAfter(':').toInt() else 2
+                prefs.detectorBench = times.entries.joinToString(", ") { (k, v) ->
+                    (if (k.startsWith("CPU")) "CPU ×${k.substringAfter(':')}" else k.substringBefore(':')) + " %.0f ms".format(v) }
+                prefs.benchErrors = errors.joinToString("; ")
+                prefs.benchBundle = files.manifest.version
             }
+            val threads = prefs.detectorThreads.takeIf { it > 0 } ?: p.detectorThreads
             val runtime = when (choice) {
                 AccelChoice.GPU -> Runtime.GPU
                 AccelChoice.CPU -> Runtime.CPU
                 AccelChoice.AUTO -> bench ?: Runtime.CPU
             }
-            prefs.pending = "detector:${runtime.name}"
+            prefs.pendingDetector = runtime.name
             val d = try {
-                LiveDetector(files.dir, files.detector, runtime, p.detectorThreads, environment())
+                LiveDetector(files.dir, files.detector, runtime, threads, environment(), files.tuning)
             } catch (e: Exception) {
                 if (runtime == Runtime.CPU) throw e
-                LiveDetector(files.dir, files.detector, Runtime.CPU, p.detectorThreads, environment())   // GPU refused: CPU
+                val err = "GPU load: ${e.message}"
+                if (err !in prefs.benchErrors) prefs.benchErrors = listOf(prefs.benchErrors, err).filter { it.isNotBlank() }.joinToString("; ")
+                if (choice == AccelChoice.AUTO) prefs.detectorBenchRuntime = Runtime.CPU   // do not retry the GPU every launch
+                LiveDetector(files.dir, files.detector, Runtime.CPU, threads, environment(), files.tuning)   // GPU refused: CPU
             } finally {
-                prefs.pending = null
+                prefs.pendingDetector = null
             }
             focus.value?.let { id -> d.focusBias = files.focus?.bias(id, files.detector.genera.size) }
             d.genusWarn = genusWarn(files)
             detector = d
-            models.value = models.value.copy(detector = "${d.accelerator} · loaded in ${d.loadMs} ms" +
-                (if (prefs.detectorBench.isNotBlank()) " · measured ${prefs.detectorBench}" else ""), detectorReady = true)
+            models.update { it.copy(detector = "${d.accelerator}${if (d.accelerator == "CPU") " ×${d.threads}" else ""} · " +
+                "${files.detector.size} px · loaded in ${d.loadMs} ms" +
+                (if (prefs.detectorBench.isNotBlank()) " · measured ${prefs.detectorBench}" else ""), detectorReady = true) }
         } catch (e: Throwable) {
-            models.value = models.value.copy(detector = "failed: ${e.message}", error = e.toString())
+            models.update { it.copy(detector = "failed: ${e.message}", error = e.toString()) }
         }
     }
 
@@ -383,23 +474,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val avail = DeviceProfile.availMb(getApplication())
             val need = meta.bytes / (1024 * 1024) + 400
             if (avail < need) message.value = "Low memory: $avail MB free, the species model needs about $need MB. Close other apps if identification fails."
-            models.value = models.value.copy(species = "preparing ${meta.id} on ${runtime.name}…")
+            models.update { it.copy(species = "preparing ${meta.id} on ${runtime.name}…") }
             val head = SpeciesHead(files.head, File(files.dir, files.head.file).readBytes())
             val cache = if (runtime == Runtime.CPU) File(xnnCache, "${files.manifest.version}-${meta.id}.xnn") else null
-            prefs.pending = "species:load"
+            prefs.pendingSpecies = "load"
+            val text = files.head.textFile?.let { f -> File(files.dir, f).takeIf { it.exists() } }?.let {
+                TextIndex(it.readBytes(), files.catalog.species.size, files.head.textDim)
+            }
             val s = try {
-                SpeciesIdentifier(files.dir, meta, head, files.catalog, runtime, p.speciesThreads, cache, environment())
+                SpeciesIdentifier(files.dir, meta, head, files.catalog, runtime, p.speciesThreads, cache, environment(), text)
             } finally {
-                prefs.pending = null
+                prefs.pendingSpecies = null
             }
             identifier = s
-            models.value = models.value.copy(
+            models.update { it.copy(
                 species = "${meta.label} · ${s.accelerator}, ${p.speciesThreads} threads · loaded in ${s.loadMs} ms" + if (s.usedCache) " (weight cache)" else "",
-                speciesReady = true)
+                speciesReady = true) }
             speciesLoaded.complete(true)
         } catch (e: Throwable) {
             val next = DevicePlanner.fallback(p, files.speciesModels.variants)
-            models.value = models.value.copy(species = "failed: ${e.message}", error = e.toString())
+            models.update { it.copy(species = "failed: ${e.message}", error = e.toString()) }
             speciesLoaded.complete(false)
             if (next != null) {
                 setPlan(next)
@@ -433,49 +527,131 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var lastRun = 0L
     private val liveMs = ArrayDeque<Float>()
     private val liveBest = ArrayDeque<Float>()
+    /** Per-stage times of recent frames (D-044 device report): camera bitmap + rotation, preprocess, model, post. */
+    private val stageMs = Array(4) { ArrayDeque<Float>() }
+    private val frameTimes = ArrayDeque<Long>()
+    private val perMinute = ArrayDeque<Pair<Long, Float>>()
+    private val ring = ArrayDeque<String>()
+    private val startBattery = batteryPct()
+    private val startMs = SystemClock.elapsedRealtime()
+    private var alertsConfirmed = 0
+    private var alertsUnconfirmed = 0
 
-    /** This phone's profile, plan, runtimes and recent timings, uploaded with the log (D-036/D-038). */
+    private fun push(q: ArrayDeque<Float>, v: Float, n: Int = 300) = synchronized(q) { q.addLast(v); if (q.size > n) q.removeFirst() }
+    private fun q(v: List<Float>, f: Double) = if (v.isEmpty()) null else v[((v.size - 1) * f).toInt()]
+
+    private fun batteryPct(): Int = runCatching {
+        (getApplication<Application>().getSystemService(android.content.Context.BATTERY_SERVICE) as android.os.BatteryManager)
+            .getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    }.getOrDefault(-1)
+
+    private fun thermal(): Int = runCatching {
+        (getApplication<Application>().getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager).currentThermalStatus
+    }.getOrDefault(-1)
+
+    /** This phone's profile, plan, runtimes and recent timings, uploaded with the log (D-036/D-038/D-044). */
     private fun deviceReport(): String {
         val files = (bundle.value as? BundleState.Ready)?.files
         val ms = synchronized(liveMs) { liveMs.sorted() }
         val bs = synchronized(liveBest) { liveBest.sorted() }
-        fun q(v: List<Float>, f: Double) = if (v.isEmpty()) null else v[((v.size - 1) * f).toInt()]
+        val now = SystemClock.elapsedRealtime()
+        val fps = synchronized(frameTimes) { frameTimes.count { now - it < 60_000 } / 60f }
         val o = kotlinx.serialization.json.buildJsonObject {
-            put("app", kotlinx.serialization.json.JsonPrimitive(getApplication<Application>().packageManager
-                .getPackageInfo(getApplication<Application>().packageName, 0).versionName))
-            put("device", kotlinx.serialization.json.JsonPrimitive(device.value?.label ?: ""))
-            put("plan", kotlinx.serialization.json.JsonPrimitive(plan.value?.toString() ?: ""))
-            put("bundle", kotlinx.serialization.json.JsonPrimitive("${files?.manifest?.version} ${files?.variant}"))
-            put("detector", kotlinx.serialization.json.JsonPrimitive(models.value.detector))
-            put("species", kotlinx.serialization.json.JsonPrimitive(models.value.species))
-            put("detector_bench", kotlinx.serialization.json.JsonPrimitive(prefs.detectorBench))
-            put("live_frames", kotlinx.serialization.json.JsonPrimitive(ms.size))
-            q(ms, 0.5)?.let { put("live_ms_p50", kotlinx.serialization.json.JsonPrimitive(it)) }
-            q(ms, 0.9)?.let { put("live_ms_p90", kotlinx.serialization.json.JsonPrimitive(it)) }
-            q(bs, 0.5)?.let { put("live_best_objectness_p50", kotlinx.serialization.json.JsonPrimitive(it)) }
-            q(bs, 0.9)?.let { put("live_best_objectness_p90", kotlinx.serialization.json.JsonPrimitive(it)) }
-            put("last_id_ms", kotlinx.serialization.json.JsonPrimitive(lastIdMs))
+            fun put(k: String, v: Any?) {
+                when (v) {
+                    null -> {}
+                    is Number -> put(k, kotlinx.serialization.json.JsonPrimitive(v))
+                    is Boolean -> put(k, kotlinx.serialization.json.JsonPrimitive(v))
+                    else -> put(k, kotlinx.serialization.json.JsonPrimitive(v.toString()))
+                }
+            }
+            put("app", getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName)
+            put("device", device.value?.label ?: "")
+            put("gpu_available", device.value?.gpuAvailable)
+            put("plan", plan.value?.toString() ?: "")
+            put("bundle", "${files?.manifest?.version} ${files?.variant}")
+            put("detector", models.value.detector)
+            put("species", models.value.species)
+            put("detector_bench", prefs.detectorBench)
+            put("detector_bench_errors", prefs.benchErrors)
+            put("detector_threads", prefs.detectorThreads)
+            put("live_frames", ms.size)
+            put("live_ms_p50", q(ms, 0.5)); put("live_ms_p90", q(ms, 0.9))
+            listOf("camera", "pre", "model", "post").forEachIndexed { i, k ->
+                val v = synchronized(stageMs[i]) { stageMs[i].sorted() }
+                put("stage_${k}_ms_p50", q(v, 0.5)); put("stage_${k}_ms_p90", q(v, 0.9))
+            }
+            put("fps_last_minute", fps)
+            put("live_ms_p50_per_minute", synchronized(perMinute) { perMinute.joinToString(" ") { "%.0f".format(it.second) } })
+            put("live_best_objectness_p50", q(bs, 0.5)); put("live_best_objectness_p90", q(bs, 0.9))
+            put("last_id_ms", lastIdMs)
+            put("thermal_status", thermal())
+            put("battery_pct", batteryPct())
+            val hours = (now - startMs) / 3_600_000f
+            if (hours > 0.05f && startBattery >= 0) put("battery_pct_per_hour", (startBattery - batteryPct()) / hours)
+            put("walk_alerts_confirmed", alertsConfirmed); put("walk_alerts_unconfirmed", alertsUnconfirmed)
         }
         return o.toString()
     }
 
-    /** CameraX analyzer (on detectorExecutor): one RGBA frame -> upright pixels -> detector. */
+    /** CameraX analyzer (on detectorExecutor): one RGBA frame -> upright pixels -> detector -> walk logic. */
     fun analyze(proxy: ImageProxy) {
         try {
             val d = detector ?: return
             if (screen.value != Screen.LIVE || busy.value != null) return       // CPU goes to the identification
             val now = SystemClock.elapsedRealtime()
-            val fps = plan.value?.liveMaxFps ?: 8
-            if (now - lastRun < 1000L / fps) return                               // frame-rate cap on slow phones
+            val files = (bundle.value as? BundleState.Ready)?.files
+            val tuning = files?.tuning ?: io.github.cyberneticmedic.transferner.core.Tuning()
+            var fps = if (walk.value) tuning.walkFps else plan.value?.liveMaxFps ?: 8
+            if (thermal() >= android.os.PowerManager.THERMAL_STATUS_SEVERE) fps = minOf(fps, 2)    // hot phone: slow down
+            if (now - lastRun < 1000L / fps) return                               // frame-rate cap
             lastRun = now
+            val t0 = System.nanoTime()
             val up = upright(proxy.toBitmap(), proxy.imageInfo.rotationDegrees)
             val n = up.width * up.height
             if (px.size != n) px = IntArray(n)
             up.getPixels(px, 0, up.width, 0, 0, up.width, up.height)
-            val r = d.run(px, up.width, up.height)
-            live.value = LiveFrame(r, up.width, up.height, d.lastMs, d.lastPreMs)
-            synchronized(liveMs) { liveMs.addLast(d.lastMs + d.lastPreMs); if (liveMs.size > 200) liveMs.removeFirst() }
-            synchronized(liveBest) { liveBest.addLast(r.bestScore); if (liveBest.size > 200) liveBest.removeFirst() }
+            val camMs = (System.nanoTime() - t0) / 1e6f
+            val r = d.run(px, up.width, up.height, now, boxThreshold.value)
+            val sc = scorer
+            val fs = r.rawPs?.let { ps -> sc?.score(ps) }
+            val acc = accumulator
+            var startAlert = -1
+            // alert candidates only when BioCLIP can check them now (0.6 review: unchecked ones were locked out)
+            if (walk.value && fs != null && acc != null && !verifying && identifier != null && speciesLoaded.isCompleted)
+                startAlert = acc.update(fs.alert, fs.alertGenus, now)
+            live.value = LiveFrame(r, up.width, up.height, d.lastMs, d.lastPreMs, fs, acc?.smoothed ?: 0f)
+            lastUpright = up
+            push(liveMs, d.lastMs + d.lastPreMs, 200); push(liveBest, r.bestScore, 200)
+            push(stageMs[0], camMs); push(stageMs[1], d.lastPreMs); push(stageMs[2], d.lastMs); push(stageMs[3], d.lastPostMs)
+            synchronized(frameTimes) { frameTimes.addLast(now); while (frameTimes.isNotEmpty() && now - frameTimes.first() > 60_000) frameTimes.removeFirst() }
+            synchronized(perMinute) {
+                val minute = now / 60_000
+                if (perMinute.isEmpty() || perMinute.last().first != minute) {
+                    val ms = synchronized(liveMs) { liveMs.sorted() }
+                    q(ms, 0.5)?.let { perMinute.addLast(minute to it) }
+                    if (perMinute.size > 60) perMinute.removeFirst()
+                }
+            }
+            val line = frameJson(r, fs, acc?.smoothed ?: 0f, d.lastMs + d.lastPreMs + camMs)
+            synchronized(ring) { ring.addLast(line); if (ring.size > 16) ring.removeFirst() }
+            if (walk.value) {
+                if (prefs.recordWalks) {
+                    recorder.line(line)
+                    if (now - lastSavedFrame >= 1000) { lastSavedFrame = now; recorder.frame(jpeg(up, 70), now) }
+                }
+                // serious-toxic haptic: smoothed mass of genera holding a serious cited toxic species (D-038 genera)
+                val gw = d.genusWarn
+                val ps = r.rawPs
+                if (gw != null && ps != null && r.presence >= tuning.presenceWarn) {
+                    var m = 0f
+                    for (g in ps.indices) if (gw[g] == 2) m += ps[g]
+                    val hit = toxicHold?.update(m, now) == true
+                    toxicNow.value = m >= tuning.toxicHaptic
+                    if (hit && prefs.walkHaptics) buzz(longArrayOf(0, 450))
+                }
+                if (startAlert >= 0 && files != null && fs != null) onAlert(startAlert, fs.alert, r, files, now)
+            }
         } catch (e: Throwable) {
             message.value = "Live detector: ${e.message}"
         } finally {
@@ -483,18 +659,136 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun frameJson(r: LiveResult, fs: ForageScorer.Score?, smoothed: Float, totalMs: Float): String {
+        val names = (bundle.value as? BundleState.Ready)?.files?.detector?.genera
+        val top = r.rawPs?.let { ps -> io.github.cyberneticmedic.transferner.core.Detections.topK(ps, 3).joinToString(",") {
+            "[\"${names?.get(it) ?: it}\",%.3f]".format(java.util.Locale.US, ps[it]) } } ?: ""
+        val warn = r.warnings.joinToString(",") { "\"${it.genus}\"" }
+        val boxes = r.boxes.joinToString(",") { "[%.0f,%.0f,%.0f,%.0f,%.2f]".format(java.util.Locale.US, it.x0, it.y0, it.x1, it.y1, it.score) }
+        return ("{\"t\":${System.currentTimeMillis()},\"ms\":%.0f,\"presence\":%.3f,\"top\":[$top],\"forage\":%.3f,\"forage_smoothed\":%.3f," +
+            "\"show\":%.3f,\"warn\":[$warn],\"best\":%.2f,\"boxes\":[$boxes]}")
+            .format(java.util.Locale.US, totalMs, r.presence, fs?.alert ?: 0f, smoothed, fs?.show ?: 0f, r.bestScore)
+    }
+
+    private fun jpeg(b: Bitmap, quality: Int): ByteArray = ByteArrayOutputStream().also { b.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
+
+    /** A forage alert started: confirm it with BioCLIP on this frame before buzzing (audit: precision 0.39 -> 0.94). */
+    private fun onAlert(g: Int, score: Float, r: LiveResult, files: BundleFiles, now: Long) {
+        if (verifying) { accumulator?.released(g); return }
+        val up = lastUpright ?: run { accumulator?.released(g); return }
+        val pixels = px.copyOf()
+        val w = up.width; val h = up.height
+        val genus = files.detector.genera[g]
+        val info = scorer?.byIndex?.get(g)
+        val window = r.regionLogits?.let { rl -> files.detector.regions?.let { reg ->
+            val nG = files.detector.genera.size
+            val best = (0 until rl.size / nG).maxByOrNull { wi ->       // the window where this genus scores highest
+                io.github.cyberneticmedic.transferner.core.Detections.softmax(rl.copyOfRange(wi * nG, (wi + 1) * nG))[g]
+            }
+            best?.let { reg.windows.getOrNull(it) }
+        } }
+        verifying = true
+        val frameName = if (prefs.recordWalks) recorder.frame(jpeg(up, 85), now, "-alert") else null
+        viewModelScope.launch {
+            try {
+                val id = if (speciesLoaded.isCompleted && identifier != null) withContext(speciesDispatcher) {
+                    prefs.pendingSpecies = "run"
+                    try { identifier?.identify(pixels, w, h) } finally { prefs.pendingSpecies = null }
+                } else null
+                var gp = 0f
+                var top = ""
+                var confirmed = false
+                if (id != null) {
+                    for (s in files.catalog.species) if (s.genus == genus) gp += id.probs[s.i]
+                    val i1 = io.github.cyberneticmedic.transferner.core.Detections.topK(id.probs, 1)[0]
+                    val s1 = files.catalog.species[i1]
+                    top = "${s1.name} ${pct(id.probs[i1])}"
+                    confirmed = gp >= files.tuning.verifyGenusP || s1.genus == genus
+                }
+                val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date())
+                val a = WalkAlert(now, clock, genus, info?.label?.ifBlank { genus } ?: genus, score, confirmed, top, gp, window, frameName, info?.note.orEmpty())
+                when {
+                    id == null -> accumulator?.released(g)
+                    confirmed -> accumulator?.confirmed(g, now)
+                    else -> accumulator?.rejected(g, now)
+                }
+                if (prefs.recordWalks) recorder.line(("{\"t\":${System.currentTimeMillis()},\"event\":\"alert\",\"genus\":\"$genus\",\"score\":%.3f," +
+                    "\"confirmed\":$confirmed,\"bioclip\":\"%s\",\"genus_p\":%.3f,\"frame\":\"%s\"}")
+                    .format(java.util.Locale.US, score, top.replace("\"", ""), gp, frameName ?: ""))
+                if (confirmed) {
+                    alertsConfirmed++
+                    alert.value = a
+                    alertsToday.value = alertsToday.value + a
+                    if (prefs.walkHaptics) buzz(longArrayOf(0, 70, 90, 70))
+                } else alertsUnconfirmed++
+            } catch (e: Throwable) {
+                message.value = "Walk alert check failed: ${e.message}"
+            } finally {
+                verifying = false
+            }
+        }
+    }
+
+    private fun buzz(pattern: LongArray) {
+        val ctx = getApplication<Application>()
+        val v = if (android.os.Build.VERSION.SDK_INT >= 31)
+            (ctx.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
+        else @Suppress("DEPRECATION") (ctx.getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator)
+        runCatching { v.vibrate(android.os.VibrationEffect.createWaveform(pattern, -1)) }
+    }
+
+    fun setWalk(on: Boolean) {
+        if (walk.value == on) return
+        walk.value = on
+        accumulator?.reset(); toxicHold?.reset()
+        toxicNow.value = false
+        alert.value = null
+        val record = on && prefs.recordWalks
+        detectorExecutor.execute {
+            runCatching { if (record) recorder.start() else recorder.stop() }
+                .onFailure { message.value = "Walk recording is off: ${it.message}" }
+            detector?.resetSmoothing()
+        }
+    }
+
+    fun dismissAlert() { alert.value = null }
+
+    /** Walk mode: the user passed an edible the app did not flag. Keeps the current frame for training. */
+    fun markMissed() {
+        val up = lastUpright ?: return
+        val now = SystemClock.elapsedRealtime()
+        detectorExecutor.execute {
+            val name = runCatching {
+                if (recorder.session == null) recorder.start()
+                recorder.frame(jpeg(up, 90), now, "-missed")
+            }.getOrNull()
+            recorder.line("{\"t\":${System.currentTimeMillis()},\"event\":\"missed\",\"frame\":\"${name ?: ""}\"}")
+            message.value = if (name != null) "Marked as a missed plant; the frame is kept for training." else "Marked (storage cap reached, no frame kept)."
+        }
+    }
+
     private fun upright(b: Bitmap, deg: Int): Bitmap =
         if (deg == 0) b else Bitmap.createBitmap(b, 0, 0, b.width, b.height, Matrix().apply { postRotate(deg.toFloat()) }, false)
 
     // ------------------------------------------------------------------------------------ identify
-    /** A JPEG from the camera (with its rotation) or the photo picker (EXIF rotation) -> species top 5. */
-    fun identify(jpeg: ByteArray, rotation: Int) {
+    /** Start a second photo of the same plant (a different part); the next capture is fused with [r]. */
+    fun startSecondPhoto(r: IdResult) { secondFor.value = r; go(Screen.LIVE) }
+    fun cancelSecondPhoto() { secondFor.value = null }
+
+    /**
+     * A JPEG from the camera (with its rotation) or the photo picker (EXIF rotation) -> species distribution,
+     * levels and banner (D-044). While a second photo is pending, the two are fused (mean log-probability) and
+     * the caution banner is the union of the fused and per-photo banners (false positives over negatives).
+     */
+    fun identify(jpeg: ByteArray, rotation: Int, fromCamera: Boolean = false) {
         if (busy.value != null) return
         busy.value = if (models.value.speciesReady) "Identifying…" else "Preparing the species model (first run takes longest)…"
+        val ringNow = if (fromCamera) synchronized(ring) { ring.joinToString(",", "[", "]") } else "[]"
         viewModelScope.launch {
             try {
                 if (!speciesLoaded.await()) error("the species model could not be loaded: ${models.value.species}")
                 busy.value = "Identifying…" + (estimate()?.let { " (about $it s on this phone)" } ?: "")
+                val first = secondFor.value
                 val r = withContext(speciesDispatcher) {
                     val t0 = System.nanoTime()
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -507,14 +801,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val bmp = upright(raw, rotation)
                     val pixels = IntArray(bmp.width * bmp.height)
                     bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-                    prefs.pending = "species:run"
-                    val (top, extra, t) = try { identifier!!.identify(pixels, bmp.width, bmp.height) } finally { prefs.pending = null }
-                    lastIdMs = t.modelMs
+                    prefs.pendingSpecies = "run"
+                    val id = try { identifier!!.identify(pixels, bmp.width, bmp.height) } finally { prefs.pendingSpecies = null }
+                    lastIdMs = id.timing.modelMs
                     val shown = scaled(bmp, 1080)
                     val out = ByteArrayOutputStream()
                     shown.compress(Bitmap.CompressFormat.JPEG, 88, out)
-                    IdResult(shown, out.toByteArray(), top, extra, t.modelMs, (System.nanoTime() - t0) / 1e6f)
+                    val ru = rules ?: error("capture rules not ready")
+                    val a1 = ru.analyze(id.probs, id.text)
+                    if (first?.analysis != null) {
+                        val fused = CaptureRules.fuse(first.analysis.probs, id.probs)
+                        val text = listOfNotNull(first.text, id.text).maxOrNull()
+                        var a = ru.analyze(fused, text, photos = 2)
+                        a = a.copy(caution = io.github.cyberneticmedic.transferner.core.Caution.union(listOf(a.caution, first.analysis.caution, a1.caution)))
+                        first.copy(top = a.top, modelMs = first.modelMs + id.timing.modelMs, totalMs = first.totalMs + (System.nanoTime() - t0) / 1e6f,
+                            analysis = a, text = text, secondPhoto = shown, secondJpeg = out.toByteArray(), saved = false)
+                    } else {
+                        IdResult(shown, out.toByteArray(), a1.top, id.timing.modelMs, (System.nanoTime() - t0) / 1e6f,
+                            analysis = a1, text = id.text, liveRing = ringNow)
+                    }
                 }
+                secondFor.value = null
                 result.value = r
                 go(Screen.RESULT)
             } catch (e: Throwable) {
@@ -537,8 +844,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val r = result.value ?: return
         val files = (bundle.value as? BundleState.Ready)?.files ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            log.add(r.jpeg, r.top, cautionCandidates(r.top + r.alsoPossible, warnIndex).isNotEmpty(), files.manifest.version, files.species.variant,
-                files.detector.model, note)
+            val an = r.analysis
+            val caution = an?.caution?.show ?: cautionCandidates(r.top, warnIndex).isNotEmpty()
+            log.add(r.jpeg, r.top, caution, files.manifest.version, files.species.variant, files.detector.model, note,
+                idMs = r.modelMs, text = r.text, level = an?.verdict?.level?.name?.lowercase().orEmpty(), second = r.secondJpeg) { photo ->
+                val v = an?.verdict
+                val json = kotlinx.serialization.json.Json
+                kotlinx.serialization.json.buildJsonObject {
+                    fun s(k: String, x: String) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
+                    fun n(k: String, x: Number?) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
+                    fun b(k: String, x: Boolean) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
+                    s("photo", photo); s("bundle", files.manifest.version); s("species_model", files.species.variant)
+                    s("detector", files.detector.model); n("id_ms", r.modelMs); n("total_ms", r.totalMs); n("photos", an?.photos ?: 1)
+                    put("top", kotlinx.serialization.json.JsonArray(r.top.map { c ->
+                        kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(c.species.name), kotlinx.serialization.json.JsonPrimitive(c.p))) }))
+                    s("level", v?.level?.name?.lowercase().orEmpty()); s("genus", v?.genus.orEmpty()); n("genus_p", v?.genusP)
+                    n("text_score", r.text); b("maybe_outside", v?.maybeOutside ?: false)
+                    b("caution", caution); b("caution_strong", an?.caution?.strong ?: false); n("caution_sum", an?.caution?.sum)
+                    b("second_photo_asked", an?.secondPhoto ?: false); s("note", note)
+                    put("live", runCatching { json.parseToJsonElement(r.liveRing) }.getOrElse { kotlinx.serialization.json.JsonArray(emptyList()) })
+                }.toString()
+            }
             result.value = r.copy(saved = true)
             message.value = "Saved to the log."
         }
@@ -552,9 +878,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val report = deviceReport()
                 val n = withContext(Dispatchers.IO) {
-                    log.upload(prefs.server, deviceId(), report) { i, total -> busy.value = "Sending photos $i / $total…" }
+                    log.upload(prefs.server, deviceId(), report, recorder.uploadable()) { i, total -> busy.value = "Sending files $i / $total…" }
                 }
-                message.value = "Sent $n new photos and the log to ${prefs.server}"
+                message.value = "Sent $n new files and the log to ${prefs.server}"
             } catch (e: Exception) {
                 message.value = "Could not send the log: ${e.message}"
             } finally {
@@ -583,7 +909,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val r = withContext(Dispatchers.IO) {
                 val bytes = e.photo.readBytes()
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                IdResult(bmp, bytes, e.top, emptyList(), 0f, 0f, fromLog = true, saved = true)
+                IdResult(bmp, bytes, e.top, 0f, 0f, fromLog = true, saved = true, storedCaution = e.caution)
             }
             result.value = r
             go(Screen.RESULT)
@@ -596,6 +922,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        runCatching { recorder.stop() }
         detectorExecutor.execute { detector?.close() }
         speciesExecutor.execute { identifier?.close() }
         detectorExecutor.shutdown(); speciesExecutor.shutdown()

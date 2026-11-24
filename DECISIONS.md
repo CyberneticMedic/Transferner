@@ -218,3 +218,24 @@ Newest at the bottom. Format: ID · date · decision · why.
     - App 0.3 sends saved captures (photos + CSV with an optional note of what the plant really is) to `scripts/bundle_server.py`, which writes them under `$TRANSFERNER_DATA/field_logs/<device>/`. Names are restricted, files are capped at 25 MB, nothing is overwritten.
     - These are the beginning of the D-018 field set.
     - Result screens under 0.5 top-1 now show a low-confidence hint (light, framing, organs).
+- **D-037 · 2026-11-23 · One live model plus a user-chosen focus, not a rotation of specialist live models; capture-side look-alike specialists deferred.**
+  - **The question (user):** a small rotation of live models specialised by growth form (bushes, trees, vines) or edible part (berries, nuts, tubers), instead of one lightweight generalist.
+  - **Measured on the live model's cached whole-frame logits** (`mnv4_shared`, regional test, 12,358 photos):
+    - Genus top-1 is 56.2%. Only 21% of its genus errors stay inside the right family and 30% inside the right order, so the errors are coarse, not fine distinctions within a group.
+    - Told the true group, the same model reaches 79.5% (family) or 72.8% (order).
+    - Routed by its own group guess, it gets 56.2%, no gain: the router is the hard part (family 66%, order 70%).
+    - Rotating k models costs k× compute or a 1/k update rate.
+    - Specialists confidently mislabel out-of-category plants, and there is no open-set rejection (D-008).
+    - Growth forms are fuzzy for key species: USDA lists poison ivy as herb, shrub, subshrub and vine.
+    - Edible-part categories are unsafe: tubers are underground, and a "berries" set must still hold every toxic berry.
+  - **Decision:**
+    - **One live model, improved:** D-036's distillation retrain, then a higher input resolution (`--size 384`), then crop-and-classify once boxes localise.
+    - **An optional focus chip:** tree, shrub, vine, herb, grass-like, fern, moss.
+      - It adds a soft log-prior over genera; it never masks. A genus is in a category if any of its species can take the form; genera without habit data are never down-weighted.
+      - Categories come from USDA PLANTS growth habits (`data/growth_habit.py` → `data/traits/growth_habit.csv`, cited per species) plus taxonomy for ferns and mosses.
+      - The prior strength is chosen on regional val by `eval/focus_prior.py` (right-focus gain vs wrong-focus harm), shipped as `focus.json`. Result: below when it lands.
+  - **Capture-side look-alike specialists: not now.** On the species model (production probe, regional photos):
+    - The app's caution (any toxic or conditional candidate in the top 5) already fires for all but 0.44% (val) / 0.70% (test) of toxic-species photos. Serious-severity misses: 0.67% / 0.71%.
+    - The remaining misses are scattered (at most 5 photos per toxic → non-toxic pair on val). Many are a toxic species confused with a congener that has no trait rows: *Solanum carolinense* → *S. dimidiatum*, *Asarum naniflorum* → *Hexastylis contracta*, *Caulophyllum*, *Trillium*, *Allium*. There is no cluster for a specialist to target.
+    - Revisit with field logs.
+  - **Open for the user: a congener caution.** Flagging candidates with no trait rows whose genus has a cited toxic member (230 species) cuts caution misses by a quarter (val 0.44% → 0.33%, test 0.70% → 0.53%). The cost: the banner then shows on 34% / 31% of non-toxic photos instead of 27% / 23%.

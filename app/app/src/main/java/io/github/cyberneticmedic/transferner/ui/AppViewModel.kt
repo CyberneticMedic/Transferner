@@ -349,6 +349,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------------------------------- live
     private var px = IntArray(0)
     private var lastRun = 0L
+    private val liveMs = ArrayDeque<Float>()
+    private val liveBest = ArrayDeque<Float>()
+
+    /** This phone's profile, plan, runtimes and recent timings, uploaded with the log (D-036/D-038). */
+    private fun deviceReport(): String {
+        val files = (bundle.value as? BundleState.Ready)?.files
+        val ms = synchronized(liveMs) { liveMs.sorted() }
+        val bs = synchronized(liveBest) { liveBest.sorted() }
+        fun q(v: List<Float>, f: Double) = if (v.isEmpty()) null else v[((v.size - 1) * f).toInt()]
+        val o = kotlinx.serialization.json.buildJsonObject {
+            put("app", kotlinx.serialization.json.JsonPrimitive(getApplication<Application>().packageManager
+                .getPackageInfo(getApplication<Application>().packageName, 0).versionName))
+            put("device", kotlinx.serialization.json.JsonPrimitive(device.value?.label ?: ""))
+            put("plan", kotlinx.serialization.json.JsonPrimitive(plan.value?.toString() ?: ""))
+            put("bundle", kotlinx.serialization.json.JsonPrimitive("${files?.manifest?.version} ${files?.variant}"))
+            put("detector", kotlinx.serialization.json.JsonPrimitive(models.value.detector))
+            put("species", kotlinx.serialization.json.JsonPrimitive(models.value.species))
+            put("detector_bench", kotlinx.serialization.json.JsonPrimitive(prefs.detectorBench))
+            put("live_frames", kotlinx.serialization.json.JsonPrimitive(ms.size))
+            q(ms, 0.5)?.let { put("live_ms_p50", kotlinx.serialization.json.JsonPrimitive(it)) }
+            q(ms, 0.9)?.let { put("live_ms_p90", kotlinx.serialization.json.JsonPrimitive(it)) }
+            q(bs, 0.5)?.let { put("live_best_objectness_p50", kotlinx.serialization.json.JsonPrimitive(it)) }
+            q(bs, 0.9)?.let { put("live_best_objectness_p90", kotlinx.serialization.json.JsonPrimitive(it)) }
+            put("last_id_ms", kotlinx.serialization.json.JsonPrimitive(lastIdMs))
+        }
+        return o.toString()
+    }
 
     /** CameraX analyzer (on detectorExecutor): one RGBA frame -> upright pixels -> detector. */
     fun analyze(proxy: ImageProxy) {
@@ -365,6 +392,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             up.getPixels(px, 0, up.width, 0, 0, up.width, up.height)
             val r = d.run(px, up.width, up.height)
             live.value = LiveFrame(r, up.width, up.height, d.lastMs, d.lastPreMs)
+            synchronized(liveMs) { liveMs.addLast(d.lastMs + d.lastPreMs); if (liveMs.size > 200) liveMs.removeFirst() }
+            synchronized(liveBest) { liveBest.addLast(r.bestScore); if (liveBest.size > 200) liveBest.removeFirst() }
         } catch (e: Throwable) {
             message.value = "Live detector: ${e.message}"
         } finally {
@@ -439,8 +468,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         busy.value = "Sending the log…"
         viewModelScope.launch {
             try {
+                val report = deviceReport()
                 val n = withContext(Dispatchers.IO) {
-                    log.upload(prefs.server, deviceId()) { i, total -> busy.value = "Sending photos $i / $total…" }
+                    log.upload(prefs.server, deviceId(), report) { i, total -> busy.value = "Sending photos $i / $total…" }
                 }
                 message.value = "Sent $n new photos and the log to ${prefs.server}"
             } catch (e: Exception) {

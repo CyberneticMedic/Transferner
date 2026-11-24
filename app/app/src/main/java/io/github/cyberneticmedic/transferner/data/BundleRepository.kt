@@ -92,6 +92,20 @@ class BundleRepository(private val root: File) {
             throw IOException("not enough storage: need %.0f MB free, have %.0f MB".format(missing / 1048576.0 + 200, root.usableSpace / 1048576.0))
         var done = 0L
         val buf = ByteArray(1 shl 16)
+        // a new bundle version: move unchanged files (same path, size and hash) over from the installed version
+        // instead of downloading them again (the species model alone is 0.3 to 0.6 GB)
+        installed()?.first?.takeIf { it != manifest.version }?.let { prev ->
+            val old = BundleJson.decodeFromString<Manifest>(File(root, "$prev/manifest.json").takeIf { it.exists() }?.readText() ?: return@let)
+            val oldHash = old.files.associate { it.path to it.sha256 }
+            for (f in wanted) {
+                val src = File(root, "$prev/${f.path}")
+                val dst = File(dir, f.path)
+                if (!dst.exists() && oldHash[f.path] == f.sha256 && src.length() == f.bytes) {
+                    dst.parentFile?.mkdirs()
+                    src.renameTo(dst)
+                }
+            }
+        }
         for (f in wanted) {
             val dst = File(dir, f.path)
             if (dst.length() == f.bytes && sha256(dst) == f.sha256) { done += f.bytes; onProgress(Progress(done, total, f.path, variant)); continue }

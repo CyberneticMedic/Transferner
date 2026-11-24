@@ -82,7 +82,7 @@ class ObservationLog(private val dir: File) {
      * Send the log to the home server (scripts/bundle_server.py): the CSV every time, photos once each.
      * Blocking; returns how many photos went up.
      */
-    fun upload(server: String, device: String, onProgress: (Int, Int) -> Unit): Int {
+    fun upload(server: String, device: String, report: String, onProgress: (Int, Int) -> Unit): Int {
         val base = (if (server.endsWith("/")) server else "$server/") + "upload/$device/"
         val sent = File(dir, "uploaded.txt")
         val done = if (sent.exists()) sent.readLines().toMutableSet() else mutableSetOf()
@@ -93,6 +93,8 @@ class ObservationLog(private val dir: File) {
             onProgress(i + 1, photos.size)
         }
         if (csv.exists()) post(base + csv.name, csv.readBytes(), "text/csv")
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        post(base + "device-$stamp.json", report.toByteArray(), "application/json")
         return photos.size
     }
 

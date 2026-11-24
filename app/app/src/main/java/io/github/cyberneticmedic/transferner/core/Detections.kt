@@ -15,6 +15,7 @@ data class LiveResult(
     val topFamilyP: Float,
     val boxes: List<Box>,                       // in model input pixels (size x size, squashed frame)
     val size: Int,
+    val bestScore: Float = 0f,                  // highest objectness this frame, shown or not (diagnostics)
 )
 
 object Detections {

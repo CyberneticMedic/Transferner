@@ -96,10 +96,13 @@ class LiveDetector(dir: File, val meta: DetectorMeta, runtime: Runtime, threads:
         smooth = ps
         val obj = outBufs.getValue(outs.objectness.name).readAsFloat(outs.objectness)
         val reg = outBufs.getValue(outs.boxes.name).readAsFloat(outs.boxes)
-        // 0.4 (0.2 used 0.5): on 300 regional test photos the best box scored >= 0.5 in 87%, >= 0.3 in 97%; at most 3 boxes
-        val boxes = Detections.boxes(obj, Detections.decode(reg, meta), meta, maxBoxes = 3).filter { it.score >= 0.4f }
+        // Best box from 0.25, further boxes from 0.4, at most 3 (0.2 drew >= 0.5 only; on 300 regional test photos
+        // the best box scored >= 0.5 in 87%, >= 0.3 in 97%; live frames on the Moto score lower)
+        val all = Detections.boxes(obj, Detections.decode(reg, meta), meta, maxBoxes = 3)
+        val boxes = all.filterIndexed { i, b -> b.score >= if (i == 0) 0.25f else 0.4f }
+        val best = all.firstOrNull()?.score ?: 0f
         val (genera, fam, famP) = Detections.genera(ps, meta)
-        return LiveResult(genera, fam, famP, boxes, meta.size)
+        return LiveResult(genera, fam, famP, boxes, meta.size, best)
     }
 
     fun resetSmoothing() { smooth = null }

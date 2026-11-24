@@ -207,7 +207,8 @@ fun LiveScreen(vm: AppViewModel) {
             Text("Transferner", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             val status = when {
                 !models.detectorReady -> "Loading models…"
-                showTimings && f != null -> "Live · %.0f ms · %d box%s".format(f.modelMs + f.preMs, f.result.boxes.size, if (f.result.boxes.size == 1) "" else "es")
+                showTimings && f != null -> "Live · %.0f ms · %d box%s · best %.2f".format(f.modelMs + f.preMs, f.result.boxes.size,
+                    if (f.result.boxes.size == 1) "" else "es", f.result.bestScore)
                 else -> "Live"
             }
             Row(Modifier.background(Color(0x24FFFFFF), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 5.dp),

@@ -29,7 +29,9 @@ class DownloadTest {
             val files = repo.load()
             assertNotNull(files)
             assertEquals("cpu", files!!.variant)
-            assertEquals(4411, files.catalog.species.size)
+            // app 0.7 takes the regions detector (group app:11) when the bundle has one
+            if (files.manifest.files.any { it.path == BundleRepository.REGIONS_META })
+                assertEquals("detector_rg.tflite", files.detector.model)
             assertEquals(files.head.n, files.catalog.species.size)
             val models = files.dir.listFiles()!!.filter { it.name.startsWith("species_") && it.name.endsWith(".tflite") }.map { it.name }
             assertEquals(listOf("species_cpu.tflite"), models)

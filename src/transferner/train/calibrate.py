@@ -20,10 +20,11 @@ from ..utils.config import data_root
 CHUNK = 32768
 
 
-def load(emb, split, source=None):
+def load(emb, split, source=None, canon=None):
     meta = pd.read_parquet(emb / f"{split}.parquet")
     e = torch.from_numpy(np.load(emb / f"{split}.npy"))
-    y = torch.tensor(meta.class_idx.to_numpy())
+    y = meta.class_idx.to_numpy()
+    y = torch.tensor(canon[y] if canon is not None else y)
     if source:
         m = torch.tensor((meta.source == source).to_numpy())
         e, y = e[m], y[m]
@@ -81,11 +82,19 @@ def main() -> None:
     pr = torch.load(root / args.probe)
     W, b, s = pr["W"].cuda(), pr["b"].cuda(), pr["scale"]
     logits_fn = lambda x: s * x.float() @ W.T + b                          # noqa: E731
+    # a probe trained with linear_probe --merge-twins pins the second index of each duplicated name to -1e4:
+    # its labels must be folded onto the first index too, or the fit sees impossible targets (D-045: T 5.1)
+    canon = None
+    if (b < -1e3).any():
+        sp = pd.read_parquet(root / "manifests/species.parquet", columns=["class_idx", "scientific_name"]).sort_values("class_idx")
+        first = {}
+        canon = np.array([first.setdefault(n, i) for i, n in zip(sp.class_idx, sp.scientific_name)])
+        print(f"merged twins: {(canon != sp.class_idx.to_numpy()).sum()} duplicate-name labels folded onto their first index")
 
-    sets = {"val_regional": load(emb, "val", "gbif_regional"), "val": load(emb, "val"),
-            "test": load(emb, "test")}
+    sets = {"val_regional": load(emb, "val", "gbif_regional", canon), "val": load(emb, "val", None, canon),
+            "test": load(emb, "test", None, canon)}
     if (emb / "val_ext.npy").exists():                  # rare species, out-of-region (D-026); report only
-        sets["val_ext"] = load(emb, "val_ext")
+        sets["val_ext"] = load(emb, "val_ext", None, canon)
     T = fit_temperature(logits_fn, *sets[args.fit_on])
     print(f"T = {T:.4f} (fitted on {args.fit_on}, n={len(sets[args.fit_on][1]):,})")
     for name, (e, y) in sets.items():

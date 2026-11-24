@@ -367,3 +367,20 @@ Newest at the bottom. Format: ID · date · decision · why.
     - INT8 (`detector_app_int8`, 14.0 MB): 75.4% per photo (−1.45 ± 0.40 pt paired; 448 INT8 was 75.7%). The regions graph (`_rg`) has the same whole-frame accuracy.
     - Presence gate on its INT8 graph: AUROC 0.998 (0.97 before); boxes need top-5 mass 0.453, the toxic row 0.172; plant-free frames passing the box gate 1.7% (28% before), the warning gate 5.3%; toxic-warning misses without the gate 1.5% (2.35% before), +0.1 pt from the gate.
     - **Regression kept:** box AP on single-plant photos drops 6 pt with the app's box rules (10.5 pt raw: no negatives inside GT boxes lets it fire on parts, which the containment rule mostly removes). Next live retrain: restore part of the box loss on real photos.
+  - **Species model `probe_d045a`** (interim: homonym repair + perennials + backfill, before the month-balanced photos; `artifacts/img_emb_v2a`, 344,495 new embeddings, `--merge-twins`), same frozen test set (176,590 regional photos, identical uuids), name twins merged:
+
+    | | `probe.pt` (d030) | `probe_d045a` |
+    |---|---|---|
+    | Top-1 | 85.46% | 85.57% (only d030 right 1,443 photos, only d045a 1,647) |
+    | 441 homonym-repaired classes (18,445 photos) | 85.7% | 87.1% |
+    | Look-alike species | 84.5% | 85.1% |
+    | Toxic species | 88.55% | 88.59% |
+    | Encounter-weighted top-1 | 89.99% | 90.04% |
+    | ECE (calibrated) | 0.006 | 0.006 (T = 1.40) |
+    | New perennials (val, 12,720 photos) | — | 92.0% |
+
+    - **Val is not comparable across the two:** the re-run splits moved 25% of regional val photos (82% in the repaired classes) out of what was d030's training set, so d030 scores 98.6% there on photos it trained on. Train and val are disjoint within each split set; quote test.
+    - `calibrate.py` folds name-twin labels onto their first index when the probe pins the twin's bias (the first fit gave T = 5.1 and ECE 0.77); `evaluate.py --merge-twins` fixed (numpy predictions).
+    - Warnings with `probe_d045a` and `mnv4_live_d044` (regional test, `results/tables/warning_flags_d045a.csv`): capture banner (0.7 rules) misses 0.10% of toxic photos (serious 0.10%), false alarms 27.6%; live toxic row misses 0.55% (`mnv4_live448`: 1.2%), false alarms 27.4%.
+  - **Published 2026-11-24: bundle 0.7** (`mnv4_live_d044` INT8 + `_rg` in group `app:11`, `probe_d045a`, 4,531 species, presence gate 0.453 / 0.172, `min_app` 0) **and app 0.7** (versionCode 11). Checked before publishing against a private staging server: app 0.7 downloads it and runs the regions graph; the 0.4.3 and 0.6 sources (git worktrees at e5c36b7, 22405a0) download it, load the 3-output detector and match the Python goldens (differences only where the trait wording changed or the 0.4.3 test reads the published bundle instead of the goldens' pin).
+  - **Next:** the month-balanced pull (running), then the final species model with `test_season`; the next live retrain with the clean teacher, the new genera and the box-loss regression above.

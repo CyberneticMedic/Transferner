@@ -106,7 +106,7 @@ def main() -> None:
     if args.merge_twins:                       # map predictions and labels to each name's first index, as the app sums them
         first = {}
         canon = np.array([first.setdefault(n, i) for i, n in enumerate(sp.scientific_name)])
-        models = {k: (torch.from_numpy(canon[t.numpy()]), c) for k, (t, c) in models.items()}
+        models = {k: (canon[np.asarray(t)], c) for k, (t, c) in models.items()}
         y = canon[y]
 
     masks = group_masks(sp, y)
@@ -148,7 +148,7 @@ def main() -> None:
     seen = pd.read_parquet(root / "manifests/priors_state_month.parquet").groupby("gbif_taxon_key")["count"].sum()
     enc = sp.gbif_taxon_key.map(seen).fillna(0).to_numpy() + 1.0
     for name, (top, _) in models.items():
-        hit = (top[:, 0].numpy() == y)
+        hit = (np.asarray(top[:, 0]) == y)
         strata = {"field 0": nf == 0, "field 1-49": (nf > 0) & (nf < 50), "field 50+": nf >= 50}
         per_sp = pd.DataFrame({"y": y, "hit": hit}).groupby("y").hit.mean()
         w = enc[per_sp.index.to_numpy()]

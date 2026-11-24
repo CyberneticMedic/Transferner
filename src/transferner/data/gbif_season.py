@@ -30,8 +30,10 @@ from .gbif_media import MAX_IMAGES_PER_OBS, ORGANS, norm_license
 WINTER = (10, 11, 12, 1, 2)
 
 
-def fetch_month(key: int, datasets, gadm, since: str, month: int, n: int, skip: set) -> list[dict]:
-    """First n new observations (with images) of taxon `key` in calendar month `month` (any year >= since)."""
+def fetch_month(key: int, datasets, gadm, since: str, month: int, n: int, skip: set, max_pages: int = 3) -> list[dict]:
+    """First n new observations (with images) of taxon `key` in calendar month `month` (any year >= since),
+    looking at most max_pages x 300 results deep: where a month's first observations were all fetched before,
+    deep paging cost ~6 s per request (a 6-hour pull) for a handful of extra photos."""
     rows, seen, offset = [], set(), 0
     params = {"taxonKey": key, "datasetKey": datasets, "mediaType": "StillImage", "eventDate": f"{since},*",
               "occurrenceStatus": "PRESENT", "limit": 300, "gadmGid": gadm, "month": month}
@@ -56,7 +58,7 @@ def fetch_month(key: int, datasets, gadm, since: str, month: int, n: int, skip: 
                              "organ": organ if organ in ORGANS else None, "gbif_scientific_name": o.get("species"),
                              "occurrence_ref": o.get("occurrenceID") or o.get("references")})
         offset += 300
-        if r["endOfRecords"] or offset >= 10_000:
+        if r["endOfRecords"] or offset >= 300 * max_pages:
             break
     return rows
 

@@ -182,7 +182,7 @@ def main() -> None:
     size = ck["args"].get("size") or cfg["model"]["input"]
     model = build(len(labels["genera"]), cfg["model"]["backbone"], size, pretrained=False,
                   head=ck["args"].get("head", "ssdlite"), image_aux=ck["args"].get("aux_image", 0) > 0,
-                  image_head=ck["args"].get("image_head", 0))
+                  image_head=ck["args"].get("image_head", 0), min_ratio=ck["args"].get("min_ratio", 0.2))
     model.load_state_dict(ck["model"])
     model.eval()
     genera, family_of, families, splits = load_items(root, args.boxes, ck["args"].get("fallback", "keep"), 0, args.seed)

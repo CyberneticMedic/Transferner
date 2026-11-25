@@ -148,10 +148,12 @@ class SharedGenusHead(nn.Module):
 
 
 def build(n_genera: int, backbone: str, size: int, pretrained: bool = True, head: str = "ssdlite",
-          image_aux: bool = False, image_head: int = 0) -> SSD:
+          image_aux: bool = False, image_head: int = 0, min_ratio: float = 0.2) -> SSD:
+    """min_ratio: the smallest anchor scale (share of the frame side). 0.2 = 90 px at 448, which no box under 2% of
+    the frame reaches at IoU 0.5 (D-046 mining); the app decodes against the anchors in the sidecar."""
     norm = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
     body = Backbone(backbone, pretrained, norm)
-    anchors = DefaultBoxGenerator([[2, 3] for _ in range(6)], min_ratio=0.2, max_ratio=0.95)
+    anchors = DefaultBoxGenerator([[2, 3] for _ in range(6)], min_ratio=min_ratio, max_ratio=0.95)
     if head == "shared":
         h = SharedGenusHead(body.out_channels, anchors.num_anchors_per_location(), n_genera, norm, image_aux=image_aux,
                             image_head=image_head)
@@ -253,7 +255,13 @@ def ssd_loss_batched(model: SSD, out, anchors0: torch.Tensor, targets, iou_thres
       inside_ignore  unmatched anchors with at least this share of their area inside a GT box are not mined
                      as negatives (78% of hard negatives sat on the plant itself)
       targets[i]["box_loss"] = False   the image contributes neither positives nor negatives (vascular
-                     full-frame fallback boxes, which are often wrong)"""
+                     full-frame fallback boxes, which are often wrong)
+    D-046 options (Open Images plant boxes):
+      label -1       a class-agnostic positive (a whole plant of unknown genus): its classification loss is
+                     -log(1 - P(background)) = -log sum_g P(g), so it teaches objectness and leaves the genus free
+      targets[i]["ignore"]     (K, 4) boxes whose anchors are never negatives (IoU >= 0.4 or half inside): group
+                     boxes (tree lines, hedges) and per-flower boxes
+      targets[i]["negatives"] = False   positives only: no hard negatives in this image (plants may be unboxed)"""
     reg, logits = out["bbox_regression"].float(), out["cls_logits"].float()
     B, A, C = logits.shape
     G = max(1, max(len(t["boxes"]) for t in targets))
@@ -276,11 +284,30 @@ def ssd_loss_batched(model: SSD, out, anchors0: torch.Tensor, targets, iou_thres
     target = model.box_coder.encode_single(gt[fb, m[fb, fa]], anchors0[fa])
     bbox = F.smooth_l1_loss(reg[fb, fa], target, reduction="sum")
     cls_t = torch.where(fg, lab.gather(1, m), 0)
-    cls = F.cross_entropy(logits.view(-1, C), cls_t.view(-1), reduction="none").view(B, A)
+    agn = cls_t < 0                                                       # class-agnostic positives (label -1)
+    cls = F.cross_entropy(logits.view(-1, C), cls_t.clamp(min=0).view(-1), reduction="none").view(B, A)
+    if agn.any():
+        cls = torch.where(agn, torch.logsumexp(logits, -1) - torch.logsumexp(logits[..., 1:], -1), cls)
     n_neg = model.neg_to_pos_ratio * fg.sum(1, keepdim=True)
     if neg_floor:
         n_neg = n_neg.clamp(min=neg_floor)
     blocked = fg
+    K = max((len(t["ignore"]) for t in targets if t.get("ignore") is not None), default=0)
+    if K:
+        ig = anchors0.new_zeros(B, K, 4)
+        igv = torch.zeros(B, K, dtype=torch.bool, device=anchors0.device)
+        for i, t in enumerate(targets):
+            if t.get("ignore") is not None and len(t["ignore"]):
+                ig[i, :len(t["ignore"])], igv[i, :len(t["ignore"])] = t["ignore"], True
+        a = anchors0
+        iou_ig = box_iou(ig.view(-1, 4), a).view(B, K, A).masked_fill(~igv[..., None], 0)
+        ix = (torch.minimum(ig[..., None, 2], a[:, 2]) - torch.maximum(ig[..., None, 0], a[:, 0])).clamp(min=0)
+        iy = (torch.minimum(ig[..., None, 3], a[:, 3]) - torch.maximum(ig[..., None, 1], a[:, 1])).clamp(min=0)
+        ioa_ig = (ix * iy / ((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1])).clamp(min=1e-6)).masked_fill(~igv[..., None], 0)
+        blocked = blocked | (iou_ig.amax(1) >= 0.4) | (ioa_ig.amax(1) >= 0.5)
+    no_neg = torch.tensor([not t.get("negatives", True) for t in targets], device=anchors0.device)
+    if no_neg.any():
+        n_neg = n_neg.masked_fill(no_neg[:, None], 0)
     if inside_ignore > 0:
         a = anchors0
         ix = (torch.minimum(gt[..., None, 2], a[:, 2]) - torch.maximum(gt[..., None, 0], a[:, 0])).clamp(min=0)
@@ -439,8 +466,9 @@ def collate(batch):
     return torch.stack(imgs), list(boxes), list(labels), torch.tensor(genus)
 
 
-def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int):
-    """-> genera (sorted, train), family_of (per genus), {split: [(path, frac boxes, labels)]}, image genus per split."""
+def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int, genera: list | None = None):
+    """-> genera (sorted, train), family_of (per genus), {split: [(path, frac boxes, labels)]}, image genus per split.
+    genera: a fixed genus list (a trained checkpoint's labels.json); photos of other genera are dropped."""
     bx = pd.read_parquet(root / boxes_path)
     ex_p = root / "manifests/exclude_uuids.parquet"            # D-045: homonym (wrong-species) rows
     if ex_p.exists():
@@ -450,9 +478,13 @@ def load_items(root, boxes_path: str, fallback: str, limit: int, seed: int):
     bx = drop_nested(bx)
     img = pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"])
     bx = bx.merge(img, on="uuid")
-    genera = sorted(bx.loc[bx.split == "train", "genus"].unique())
+    if genera is None:
+        genera = sorted(bx.loc[bx.split == "train", "genus"].unique())
+        fam = bx.drop_duplicates("genus").set_index("genus").family
+    else:
+        genera = list(genera)
+        fam = pd.read_parquet(root / "manifests/species.parquet", columns=["genus", "family"]).drop_duplicates("genus").set_index("genus").family
     gi = {g: i for i, g in enumerate(genera)}
-    fam = bx.drop_duplicates("genus").set_index("genus").family
     families = sorted(fam[genera].unique())
     fi = {f: i for i, f in enumerate(families)}
     family_of = np.array([fi[fam[g]] for g in genera])

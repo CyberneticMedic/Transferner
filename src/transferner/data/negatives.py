@@ -13,14 +13,20 @@ Two kinds of frames, from three sources downloaded by scripts/fetch_negatives.sh
                  Places365      val_large photos of natural vegetated categories (forest, field, meadow, ...)
                  Open Images    verified Forest / Woodland / Grassland / Meadow / Jungle / Vegetation present
 Splits are by a hash of the image id (80/10/10), so negatives never cross train/val/test.
+D-046 Visual Genome audit (--vg): COCO-Stuff misses small and distant plants. Visual Genome (CC BY 4.0) has free-text
+object boxes on 51K of the COCO frames; a plant_free COCO frame with a VG tree, bush, flower, grass, leaf, hedge,
+vine, ... object (prints, patterns and shadows excluded) becomes kind "plant_vg", which no consumer reads. A full
+rebuild re-applies it when raw/visual_genome/json/ is present.
 Writes $TRANSFERNER_DATA/manifests/negatives.parquet; with --fetch-openimages N also downloads N Open Images
 photos per kind (resumable, 16 at a time, from the public S3 bucket) into raw/negatives/openimages/<kind>/.
-  python -m transferner.data.negatives [--fetch-openimages 30000]"""
+  python -m transferner.data.negatives [--fetch-openimages 30000]
+  python -m transferner.data.negatives --vg        # only the VG audit, applied to the existing manifest"""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -45,6 +51,55 @@ PLACES_VEG = ("forest", "forest_path", "forest_road", "field/wild", "field/culti
               "swamp", "marsh", "pasture", "tree_farm", "orchard", "vineyard", "corn_field", "wheat_field", "rice_paddy", "hayfield",
               "botanical_garden", "formal_garden", "vegetable_garden", "japanese_garden", "topiary_garden", "yard", "lawn", "park",
               "creek", "river", "picnic_area", "campsite", "valley")
+
+
+VG_PLANT = {"tree", "trees", "treeline", "bush", "bushes", "shrub", "shrubs", "shrubbery", "plant", "plants", "planter",
+            "planters", "flower", "flowers", "hedge", "hedges", "weed", "weeds", "leaves", "leaf", "leafs", "leafy", "foliage",
+            "grass", "grasses", "grassy", "grassland", "lawn", "vine", "vines", "ivy", "fern", "ferns", "moss", "branch",
+            "branches", "twig", "twigs", "greenery", "vegetation", "rose", "roses", "daisy", "daisies", "tulip", "tulips",
+            "sunflower", "sunflowers", "cactus", "bamboo", "pine", "pines", "blossom", "blossoms", "bloom", "blooms", "bouquet",
+            "petal", "petals", "evergreen", "palm tree", "palm trees", "flowerpot"}
+VG_NOT = {"design", "designs", "pattern", "print", "printed", "decal", "logo", "painting", "painted", "picture", "sticker",
+          "graphic", "motif", "drawing", "image", "shadow", "shadows", "emblem", "decoration", "ornament", "magnet", "wallpaper",
+          "embroidery", "fabric", "tattoo", "sign", "symbol", "icon", "shaped", "shape", "cartoon", "artwork", "art", "poster",
+          "mural", "chair", "mower", "pineapple", "pineapples", "fake", "artificial", "plastic"}
+
+
+def vg_plant_coco_ids(root: Path) -> dict[int, str]:
+    """COCO image id -> the first plant-like Visual Genome object name on it (raw/visual_genome/json/)."""
+    d = root / "raw/visual_genome/json"
+    coco_of = {im["image_id"]: im["coco_id"] for im in json.loads((d / "image_data.json").read_text()) if im.get("coco_id")}
+    out = {}
+    for im in json.loads((d / "objects.json").read_text()):
+        c = coco_of.get(im["image_id"])
+        if c is None:
+            continue
+        for o in im["objects"]:
+            for n in o.get("names", []):
+                n = n.strip().lower()
+                tok = set(re.findall(r"[a-z]+", n))
+                if (tok & VG_PLANT or any(p in n for p in ("palm tree", "flower pot"))) and not tok & VG_NOT:
+                    out[c] = n
+                    break
+            if c in out:
+                break
+    return out
+
+
+def vg_audit(root: Path, m: pd.DataFrame) -> pd.DataFrame:
+    if not (root / "raw/visual_genome/json/objects.json").exists():
+        print("no raw/visual_genome/json/: VG audit skipped", flush=True)
+        return m
+    flagged = vg_plant_coco_ids(root)
+    cid = m.path.str.extract(r"coco/(?:train|val)2017/0*(\d+)\.jpg$")[0].astype("Int64")
+    hit = (m.source == "coco") & (m.kind == "plant_free") & cid.isin(set(flagged)).fillna(False).to_numpy(bool)
+    m = m.copy()
+    m.loc[hit, "kind"] = "plant_vg"
+    names = pd.Series([flagged.get(int(c)) for c in cid[hit]]).value_counts().head(12).to_dict()
+    print(f"VG audit: {int(hit.sum()):,} of {int(((m.source == 'coco') & m.kind.isin(['plant_free', 'plant_vg'])).sum()):,} COCO "
+          f"plant_free frames carry a VG plant object -> plant_vg; by split {m[hit].split.value_counts().to_dict()}; "
+          f"first names {names}", flush=True)
+    return m
 
 
 def split_of(key: str) -> str:
@@ -147,8 +202,15 @@ def fetch(root: Path, df: pd.DataFrame, workers: int = 16) -> int:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fetch-openimages", type=int, default=0, help="Open Images photos per kind to select and download")
+    ap.add_argument("--vg", action="store_true", help="only apply the Visual Genome audit to the existing manifest")
     args = ap.parse_args()
     root = data_root()
+    out = root / "manifests/negatives.parquet"
+    if args.vg:
+        m = vg_audit(root, pd.read_parquet(out))
+        m.to_parquet(out, index=False)
+        print(m.groupby(["source", "kind", "split"]).size().unstack(fill_value=0).to_string())
+        return
     parts = [coco(root), places(root)]
     print(f"coco: {len(parts[0]):,} ({parts[0].kind.value_counts().to_dict()}); places365 vegetation: {len(parts[1]):,}", flush=True)
     if args.fetch_openimages:
@@ -157,8 +219,7 @@ def main() -> None:
         oi = oi[[(root / p).exists() for p in oi.path]]
         print(f"open images: {ok:,} fetched, {len(oi):,} on disk", flush=True)
         parts.append(oi)
-    m = pd.concat(parts, ignore_index=True)
-    out = root / "manifests/negatives.parquet"
+    m = vg_audit(root, pd.concat(parts, ignore_index=True))
     m.to_parquet(out, index=False)
     print(m.groupby(["source", "kind", "split"]).size().unstack(fill_value=0).to_string())
     print(f"wrote {out}: {len(m):,} frames")

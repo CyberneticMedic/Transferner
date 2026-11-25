@@ -51,7 +51,7 @@ def torch_runner(d: Path, ckpt: str, size: int, n_genera: int):
     from ..train.train_detector import Net, build, forward_raw
     ck = torch.load(d / ckpt, map_location="cpu")
     model = build(n_genera, load("detector")["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True,
-                  image_head=ck["args"].get("image_head", 1280))
+                  image_head=ck["args"].get("image_head", 1280), min_ratio=ck["args"].get("min_ratio", 0.2))
     model.load_state_dict(ck["model"]); model.to("cuda").eval()
     net = Net(model)
     mean = torch.tensor(model.backbone.mean, device="cuda").view(1, 3, 1, 1)

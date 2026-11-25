@@ -16,11 +16,24 @@ of val; the regional slice is reported) or the encounter-weighted top-1 (--selec
 mosaic box AP50, so a step whose boxes are broken cannot win on the label alone (mnv4_live448 picked step 0,
 the 320 px weights at 448: label 0.7648 vs 0.7643 after training, mosaic AP50 0.579 vs 0.675). Test once at
 the end. Writes artifacts/detector/<name>/ (best.pt, final.pt) and a row to results/tables/detector_live.csv.
+D-046 (user request 2026-11-24: "additional data that has distant plants or plants in a cluttered scene"): two
+more boxed sources and two more yardsticks.
+  --oi       share of boxed samples that are Open Images plant photos (data/openimages_plants.py): whole-plant
+             boxes as class-agnostic positives, group and per-flower boxes as ignore regions, hard negatives
+             only where Tree and Plant were both human-verified (else unboxed plants would be taught as background)
+  --scene    share of boxed samples drawn from our own real-scene photos: largest box under 10% of the frame,
+             boxes covering under 25% of it, or three or more boxes
+  --min-ratio  smallest anchor scale (0.2 = 90 px at 448; 0.1 = 45 px)
+  scene_ap50   class-agnostic AP50 on the real-scene slice of val/test (ops/mining-20261124 eval_slice_*.parquet)
+  oi_ap50      class-agnostic AP50 on Open Images validation photos (hash halves: val / test), detections on
+               ignore regions removed; oi_app_ap50 with the app's box rules
+A checkpoint with fewer genera (D-045 perennials) starts the new genus rows from the mean of its family's rows.
   python -m transferner.train.train_live_head --name mnv4_live
   python -m transferner.train.train_live_head --eval-only artifacts/detector/mnv4_live/best.pt --size 384"""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import time
@@ -32,15 +45,16 @@ import timm
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torchvision import tv_tensors
 from torchvision.io import ImageReadMode, decode_image
 from torchvision.transforms import v2
 
 from ..eval.metrics import coco_map
 from ..utils.config import data_root, load
 from ..utils.csvlog import RunLog
-from .train_detector import (BoxSet, Net, anchors_for, build, collate, detect, evaluate, field_degrade, forward_raw,
-                             load_items, photometric, python_headers_for_triton, ssd_loss_batched, use_shift_add_depthwise,
-                             white_balance)
+from .train_detector import (BoxSet, Net, anchors_for, app_boxes, build, collate, detect, evaluate, field_degrade,
+                             forward_raw, load_items, photometric, python_headers_for_triton, ssd_loss_batched,
+                             use_shift_add_depthwise, white_balance)
 
 
 def teacher(root, out_path, genera, args) -> pd.DataFrame:
@@ -153,10 +167,15 @@ class LiveBoxSet(Dataset):
         detector_training-02) contribute no box loss when fallback_off holds the photo's path.
     Returns (img, boxes, labels, soft) with soft = (genus idx[K_SOFT], weight[K_SOFT], uniform, box_loss)."""
 
-    def __init__(self, root, items, size, low_light_p, photo, wb_p, p_comp, p_neg, negs, vegs, fallback_off, comp_items):
+    def __init__(self, root, items, size, low_light_p, photo, wb_p, p_comp, p_neg, negs, vegs, fallback_off, comp_items,
+                 p_oi=0.0, oi_items=(), p_scene=0.0, scene_items=()):
         self.root, self.items, self.size = root, items, size
         self.full = BoxSet(root, items, size, True, low_light_p, photo, zoom_out=p_comp == 0, wb_p=wb_p)
         self.p_comp, self.p_neg, self.negs, self.vegs = p_comp, p_neg, negs, vegs
+        self.p_oi, self.oi_items, self.p_scene, self.scene_items = p_oi, oi_items, p_scene, scene_items
+        self.scene = BoxSet(root, list(scene_items), size, True, low_light_p, photo, zoom_out=True, wb_p=wb_p) if p_scene else None
+        self.oi_tf = v2.Compose([photometric(photo), v2.RandomResizedCrop(size, scale=(0.4, 1.0), antialias=True),
+                                 v2.RandomHorizontalFlip(), v2.SanitizeBoundingBoxes(min_size=2)])
         self.fallback_off, self.comp_items = fallback_off, comp_items
         self.low_light_p, self.wb_p = low_light_p, wb_p
         self.bg_tf = v2.Compose([v2.RandomResizedCrop(size, scale=(0.35, 1.0), antialias=True), v2.RandomHorizontalFlip(),
@@ -218,17 +237,42 @@ class LiveBoxSet(Dataset):
         img = self._finish(self._bg(self.negs))
         return img, torch.zeros(0, 4), torch.zeros(0, dtype=torch.long), self._soft([], [], uniform=True)
 
+    def openimages(self, j=None):
+        """An Open Images plant photo: whole-plant boxes as class-agnostic positives (label -1), group and bloom
+        boxes, and targets under 6 px, as ignore regions; no whole-frame target (the genus is unknown)."""
+        j = int(torch.randint(0, len(self.oi_items), ())) if j is None else j
+        path, tgt, ign, neg_ok = self.oi_items[j]
+        img = decode_image(str(self.root / path), mode=ImageReadMode.RGB)
+        h, w = img.shape[-2:]
+        allb = torch.from_numpy(np.concatenate([tgt, ign]).astype(np.float32)) * torch.tensor([w, h, w, h])
+        role = torch.tensor([-1] * len(tgt) + [-2] * len(ign))
+        img, t = self.oi_tf(tv_tensors.Image(img), {"boxes": tv_tensors.BoundingBoxes(allb, format="XYXY", canvas_size=(h, w)),
+                                                    "labels": role})
+        b, role = t["boxes"].as_subclass(torch.Tensor).float(), t["labels"]
+        tiny = ((b[:, 2] - b[:, 0]) < 6) | ((b[:, 3] - b[:, 1]) < 6)
+        role = torch.where(tiny, -2, role)
+        img = self._finish(img.as_subclass(torch.Tensor))
+        keep = role == -1
+        return (img, b[keep], torch.full((int(keep.sum()),), -1, dtype=torch.long),
+                self._soft([], [], uniform=False, box_loss=True), (b[~keep], bool(neg_ok)))
+
     def __getitem__(self, i):
         r = float(torch.rand(()))
+        none = (torch.zeros(0, 4), True)
         if r < self.p_neg:
-            return self.negative()
+            return (*self.negative(), none)
         if r < self.p_neg + self.p_comp:
-            return self.composite()
+            return (*self.composite(), none)
+        if r < self.p_neg + self.p_comp + self.p_oi:
+            return self.openimages()
+        if r < self.p_neg + self.p_comp + self.p_oi + self.p_scene:
+            img, b, lab, g = self.scene[int(torch.randint(0, len(self.scene_items), ()))]
+            return img, b, lab, self._soft([g - 1], [1.0]), none
         img, b, lab, g = self.full[i]
         off = self.items[i][0] in self.fallback_off
         if off:
             b, lab = torch.zeros(0, 4), torch.zeros(0, dtype=torch.long)
-        return img, b, lab, self._soft([g - 1], [1.0], box_loss=not off)
+        return img, b, lab, self._soft([g - 1], [1.0], box_loss=not off), none
 
 
 def box_iou_1(b: torch.Tensor, others: torch.Tensor) -> torch.Tensor:
@@ -240,9 +284,136 @@ def box_iou_1(b: torch.Tensor, others: torch.Tensor) -> torch.Tensor:
 
 
 def collate_live(batch):
-    imgs, boxes, labels, soft = zip(*batch)
+    imgs, boxes, labels, soft, extra = zip(*batch)
     idx, w, uni, bl = zip(*soft)
-    return torch.stack(imgs), list(boxes), list(labels), (torch.stack(idx), torch.stack(w), torch.stack(uni), torch.stack(bl))
+    ign, neg_ok = zip(*extra)
+    return (torch.stack(imgs), list(boxes), list(labels), (torch.stack(idx), torch.stack(w), torch.stack(uni), torch.stack(bl)),
+            (list(ign), list(neg_ok)))
+
+
+def oi_items(root, split: str) -> list:
+    """Open Images plant photos as (path, target boxes, ignore boxes, negatives allowed): OI train -> train; OI
+    validation split by a hash of the image id into val and test halves."""
+    im = pd.read_parquet(root / "manifests/openimages_plants_images.parquet")
+    bx = pd.read_parquet(root / "manifests/openimages_plants.parquet")
+    if split == "train":
+        im = im[im.oi_split == "train"]
+    else:
+        half = np.array([int(hashlib.sha1(i.encode()).hexdigest()[:8], 16) % 2 for i in im.image_id])
+        im = im[(im.oi_split == "validation").to_numpy() & (half == (0 if split == "val" else 1))]
+    im = im[[(root / p).exists() for p in im.path]]
+    bx = bx[bx.image_id.isin(set(im.image_id))].sort_values("image_id", kind="stable")
+    xy = bx[["x0", "y0", "x1", "y1"]].to_numpy(np.float32)
+    tgt = (bx.role == "target").to_numpy()
+    ids, start = np.unique(bx.image_id.to_numpy(), return_index=True)
+    end = np.append(start[1:], len(bx))
+    span = dict(zip(ids, zip(start, end)))
+    out = []
+    for i, path, ver in zip(im.image_id, im.path, im.verified.fillna("")):
+        a, b = span[i]
+        both = ("tree_" in ver) and ("plant_" in ver)          # Tree and Plant both human-checked: unboxed = background
+        out.append((path, xy[a:b][tgt[a:b]], xy[a:b][~tgt[a:b]], both))
+    return out
+
+
+class OIEval(Dataset):
+    def __init__(self, root, items, size):
+        self.root, self.items, self.size = root, items, size
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, i):
+        path, tgt, ign, _ = self.items[i]
+        img = v2.Resize((self.size, self.size), antialias=True)(decode_image(str(self.root / path), mode=ImageReadMode.RGB))
+        s = self.size
+        return img, torch.from_numpy(tgt * s).float(), torch.from_numpy(ign * s).float(), 0
+
+
+def oi_eval(model, net, items, size, anchors0, dev, mean, std, workers) -> dict:
+    """Class-agnostic box AP on Open Images plant photos: real distant and cluttered plants with human boxes.
+    A detection half inside an ignore region (group box, flower box) that matches no target at IoU 0.5 is
+    dropped, so boxing a hedge or a flower is neither a hit nor a false alarm. Also with the app's box rules."""
+    from torchvision.ops import box_iou
+    model.eval()
+    rows = {k: {"img": [], "score": [], "box": []} for k in ("raw", "app")}
+    g = {"img": [], "box": []}
+    k0 = 0
+    dl = DataLoader(OIEval(data_root(), items, size), batch_size=64, num_workers=workers, collate_fn=collate)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        for imgs, tgts, igns, _ in dl:
+            out = forward_raw(net, ((imgs.to(dev).float() / 255) - mean) / std)
+            res, _ = detect(model.box_coder, {k: v.float() for k, v in out.items()}, anchors0, size)
+            for i, r in enumerate(res):
+                box, sc = np.asarray(r["abox"], np.float32).reshape(-1, 4), np.asarray(r["ascore"], np.float32)
+                if len(box) and len(igns[i]):
+                    bt = torch.from_numpy(box)
+                    ig = igns[i]
+                    ix = (torch.minimum(bt[:, None, 2], ig[:, 2]) - torch.maximum(bt[:, None, 0], ig[:, 0])).clamp(min=0)
+                    iy = (torch.minimum(bt[:, None, 3], ig[:, 3]) - torch.maximum(bt[:, None, 1], ig[:, 1])).clamp(min=0)
+                    ioa = (ix * iy / ((bt[:, 2] - bt[:, 0]) * (bt[:, 3] - bt[:, 1])).clamp(min=1e-6)[:, None]).amax(1)
+                    hit = box_iou(bt, tgts[i]).amax(1) >= 0.5 if len(tgts[i]) else torch.zeros(len(bt), dtype=torch.bool)
+                    keep = ((ioa < 0.5) | hit).numpy()
+                    box, sc = box[keep], sc[keep]
+                for kind, (bb, ss) in (("raw", (box, sc)), ("app", app_boxes(box, sc, size))):
+                    rows[kind]["img"].append(np.full(len(ss), k0 + i)); rows[kind]["score"].append(ss); rows[kind]["box"].append(np.asarray(bb).reshape(-1, 4))
+                g["img"].append(np.full(len(tgts[i]), k0 + i)); g["box"].append(tgts[i].numpy())
+            k0 += len(res)
+    model.train()
+    gi, gb = np.concatenate(g["img"]), np.concatenate(g["box"])
+    out = {}
+    for kind, d in rows.items():
+        di, ds, db = np.concatenate(d["img"]), np.concatenate(d["score"]), np.concatenate(d["box"])
+        m = coco_map(di, np.zeros(len(di), int), ds, db, gi, np.zeros(len(gi), int), gb)
+        out["oi_ap50" if kind == "raw" else "oi_app_ap50"] = m["ap50"]
+    return out
+
+
+def scene_flags(items) -> np.ndarray:
+    """Real-scene photos among (path, frac boxes, labels) items: largest box under 10% of the frame, boxes
+    covering under 25% of it (union on a 64 x 64 grid), or three or more boxes (close to the D-046 mining slice,
+    which also counts two whole-plant boxes; items carry no prompts)."""
+    out = np.zeros(len(items), bool)
+    for k, (_, xy, _) in enumerate(items):
+        a = (xy[:, 2] - xy[:, 0]) * (xy[:, 3] - xy[:, 1])
+        if len(xy) >= 3 or a.max() < 0.10:
+            out[k] = True
+            continue
+        grid = np.zeros((64, 64), bool)
+        for x0, y0, x1, y1 in (xy * 64).round().astype(int):
+            grid[y0:max(y1, y0 + 1), x0:max(x1, x0 + 1)] = True
+        out[k] = grid.mean() < 0.25
+    return out
+
+
+def scene_slice(root, items, split) -> list:
+    """The real-scene eval slice of a split: the mining's photos (ops/mining-20261124/mine/out/eval_slice_<split>
+    .parquet, fixed before D-046) with their boxes from the current manifest."""
+    p = root / f"ops/mining-20261124/mine/out/eval_slice_{split}.parquet"
+    paths = set(pd.read_parquet(p, columns=["path"]).path) if p.exists() else set()
+    return [it for it in items if it[0] in paths]
+
+
+def remap_genera(state: dict, old: list, new: list, family: dict) -> tuple[dict, int]:
+    """Genus-indexed rows (box classifier, whole-frame classifier) of a checkpoint trained on `old` genera, moved
+    to `new`; a new genus starts from the mean row of its family's old genera (else of all of them)."""
+    oi = {g: i for i, g in enumerate(old)}
+    keys = [k for k, v in state.items() if (k.startswith("head.genus.") or k.startswith("head.image_cls.5.")) and v.shape[0] == len(old)]
+    fam_rows = {}
+    for g, i in oi.items():
+        fam_rows.setdefault(family.get(g), []).append(i)
+    out = dict(state)
+    for k in keys:
+        v = state[k]
+        rows = []
+        for g in new:
+            if g in oi:
+                rows.append(v[oi[g]])
+            else:
+                src = fam_rows.get(family.get(g)) or list(range(len(old)))
+                rows.append(v[src].mean(0))
+        out[k] = torch.stack(rows)
+    return out, sum(g not in oi for g in new)
 
 
 def mosaic_eval(model, net, items, size, anchors0, dev, mean, std, workers, n=2000) -> dict:
@@ -404,7 +575,7 @@ def encounter_eval(model, net, items, size, enc, dev, mean, std, workers) -> dic
 def eval_only(root, args, init, genera, family_of, splits, size, gi, dev) -> None:
     """Val and test metrics of a trained live checkpoint at --size (resolution sweeps without retraining)."""
     model = build(len(genera), load("detector")["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True,
-                  image_head=args.image_head)
+                  image_head=args.image_head, min_ratio=init["args"].get("min_ratio", 0.2))
     missing, _ = model.load_state_dict(init["model"], strict=False)
     assert not missing, f"checkpoint lacks {sorted(missing)[:4]}"
     model.to(dev)
@@ -422,10 +593,19 @@ def eval_only(root, args, init, genera, family_of, splits, size, gi, dev) -> Non
         pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
     fb_paths = set(bx[bx.fallback].path)
     negm = pd.read_parquet(root / "manifests/negatives.parquet")
+    amp = torch.autocast("cuda", dtype=torch.float16)
+    for split in ("val", "test"):                                 # D-046 yardsticks: real scenes, Open Images plants
+        sc = [it for it in scene_slice(root, splits[split], split) if it[0] not in fb_paths]
+        row = {}
+        for tag, app in (("scene", False), ("scene_app", True)):
+            det = evaluate(model, net, DataLoader(BoxSet(root, sc, size, False), batch_size=64, num_workers=w, collate_fn=collate),
+                           anchors0, size, family_of, dev, mean, std, False, amp, app)
+            row[f"{tag}_ap50"] = det["agnostic_ap50"]
+        row.update(oi_eval(model, net, oi_items(root, split), size, anchors0, dev, mean, std, w))
+        print(f"d046 {args.eval_only} @ {size} {split} scene n {len(sc):,} " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
     if args.boxes_only:
         # test box AP on every photo, and on photos with real boxes only: the D-044 recipe drops the box loss on
         # vascular full-frame fallback boxes (19% of boxed photos), which the all-photo AP still scores as targets
-        amp = torch.autocast("cuda", dtype=torch.float16)
         real = [it for it in splits["test"] if it[0] not in fb_paths]
         for tag, items, app in (("all", splits["test"], False), ("real_boxes", real, False), ("real_boxes app_rules", real, True)):
             det = evaluate(model, net, DataLoader(BoxSet(root, items, size, False), batch_size=64, num_workers=w, collate_fn=collate),
@@ -495,10 +675,18 @@ def main() -> None:
     ap.add_argument("--select", choices=["val", "encounter", "pool"], default="val",
                     help="checkpoint selection: val whole-frame genus top-1, or encounter-weighted regional val top-1")
     ap.add_argument("--box-weight", type=float, default=0.25, help="selection: + this x val mosaic (or composite) agnostic AP50")
-    ap.add_argument("--preset", choices=["", "d044"], default="",
+    ap.add_argument("--preset", choices=["", "d044", "d046"], default="",
                     help="d044: composites 0.4, plant-free frames 0.15, negative floor 32, no negatives inside boxes, "
                          "vascular fallback boxes out of the box loss, colour jitter without channel shuffles + white "
-                         "balance 0.3, no mosaics, encounter weighting with trait genera exempt, select on pool top-1")
+                         "balance 0.3, no mosaics, encounter weighting with trait genera exempt, select on pool top-1; "
+                         "d046: d044 with composites 0.25, Open Images plants 0.15, real scenes 0.15, anchors from 0.1, "
+                         "boxes selected on the mean of composite, scene and Open Images AP50")
+    ap.add_argument("--oi", type=float, default=0.0, help="share of boxed samples that are Open Images plant photos (D-046)")
+    ap.add_argument("--scene", type=float, default=0.0, help="share of boxed samples that are real-scene photos (D-046)")
+    ap.add_argument("--min-ratio", type=float, default=0.0, help="smallest anchor scale (default: the init checkpoint's, else 0.2)")
+    ap.add_argument("--select-boxes", choices=["composite", "mean"], default="composite",
+                    help="selection box term: composite AP50, or the mean of composite, scene and Open Images AP50")
+    ap.add_argument("--eval-genera", default="", help="with --eval-only: a labels.json; score only photos of its genera")
     ap.add_argument("--composite", type=float, default=0.0, help="share of boxed samples that are seam-free composites")
     ap.add_argument("--negatives", type=float, default=0.0, help="share of boxed samples that are plant-free frames")
     ap.add_argument("--neg-floor", type=int, default=0, help="SSD loss: at least this many hard negatives per image")
@@ -525,14 +713,32 @@ def main() -> None:
         for k, v in dict(composite=0.4, negatives=0.15, neg_floor=32, inside_ignore=0.5, fallback_box_loss="vascular_off",
                          photo="jitter", wb=0.3, mosaic=0.0, encounter_exempt_traits=True, select="pool").items():
             setattr(args, k, v)
+    if args.preset == "d046":
+        for k, v in dict(composite=0.25, negatives=0.15, neg_floor=32, inside_ignore=0.5, fallback_box_loss="vascular_off",
+                         photo="jitter", wb=0.3, mosaic=0.0, encounter_exempt_traits=True, select="pool", select_boxes="mean").items():
+            setattr(args, k, v)
+        for k, v in dict(oi=0.15, scene=0.15, min_ratio=0.1).items():      # these three can be overridden
+            if not getattr(args, k):
+                setattr(args, k, v)
     torch.manual_seed(args.seed)
+    # every eval set's last partial batch is a new shape; at torch's default of 8 recompiles the train step itself
+    # (train-mode BN) fell back to eager and ran out of memory (D-046 smoke test with the scene and OI yardsticks)
+    torch._dynamo.config.recompile_limit = 64
     root, dev = data_root(), "cuda"
     size = args.size or cfg["model"]["input"]
     args.size = size
     if args.eval_only:
         args.init = args.eval_only
     init = torch.load(root / args.init, map_location="cpu")
-    genera, family_of, families, splits = load_items(root, args.boxes, init["args"].get("fallback", "keep"), 0, args.seed)
+    init_labels = root / Path(args.init).parent / "labels.json"
+    init_genera = json.loads(init_labels.read_text())["genera"] if init_labels.exists() else None
+    genera, family_of, families, splits = load_items(root, args.boxes, init["args"].get("fallback", "keep"), 0, args.seed,
+                                                     genera=init_genera if args.eval_only else None)
+    if args.eval_only and args.eval_genera:
+        keep = set(json.loads((root / args.eval_genera).read_text())["genera"])
+        splits = {k: [it for it in v if genera[it[2][0] - 1] in keep] for k, v in splits.items()}
+        print(f"--eval-genera: photos of the {len(keep & set(genera)):,} genera shared with {args.eval_genera}", flush=True)
+    args.min_ratio = args.min_ratio or init["args"].get("min_ratio", 0.2)
     out_dir = root / "artifacts/detector" / args.name
     if not args.eval_only:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -599,13 +805,22 @@ def main() -> None:
         print(f"D-044 boxed stream: composites {args.composite}, plant-free {args.negatives} ({len(negs_tr):,} frames, "
               f"{len(vegs_tr):,} vegetation backgrounds), fallback box loss off for {sum(it[0] in off for it in train):,} of "
               f"{len(train):,} boxed photos, photometric {args.photo}, white balance {args.wb}", flush=True)
+        oi_tr = oi_items(root, "train") if args.oi else []
+        scene_tr = [it for it, f in zip(comp_items, scene_flags(comp_items)) if f] if args.scene else []
+        if args.oi or args.scene:
+            print(f"D-046 boxed stream: Open Images plants {args.oi} ({len(oi_tr):,} photos, "
+                  f"{sum(o[3] for o in oi_tr):,} with hard negatives), real scenes {args.scene} ({len(scene_tr):,} of "
+                  f"{len(comp_items):,} real-box photos), anchors from {args.min_ratio}", flush=True)
         box_ds = LiveBoxSet(root, train, size, args.low_light, args.photo, args.wb, args.composite, args.negatives,
-                            negs_tr, vegs_tr, off, comp_items)
+                            negs_tr, vegs_tr, off, comp_items, args.oi, oi_tr, args.scene, scene_tr)
         box_collate = collate_live
         vegs_val = negm[(negm.kind == "vegetation") & (negm.split == "val")].path.to_numpy()
         negs_val = negm[(negm.kind == "plant_free") & (negm.split == "val")].sample(1500, random_state=0).path.to_numpy()
         val_comp = LiveBoxSet(root, [it for it in splits["val"] if it[0] not in fb_paths], size, 0.0, "jitter", 0.0, 1.0, 0.0,
                               negs_val, vegs_val, set(), [it for it in splits["val"] if it[0] not in fb_paths])
+        d046 = bool(args.oi or args.scene or args.select_boxes == "mean")
+        scene_val = [it for it in scene_slice(root, splits["val"], "val") if it[0] not in fb_paths] if d046 else []
+        oi_val = oi_items(root, "val") if d046 else []
     else:
         box_ds, box_collate = MosaicBoxSet(root, train, size, True, args.mosaic, args.low_light), collate
     dl_box = DataLoader(box_ds, batch_size=args.batch_box,
@@ -616,8 +831,16 @@ def main() -> None:
     print(f"unboxed {len(u):,} photos ({u.genus.nunique()} genera), boxed {len(train):,}; {len(genera)} genera", flush=True)
 
     model = build(len(genera), cfg["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True,
-                  image_head=args.image_head)
-    missing, unexpected = model.load_state_dict(init["model"], strict=False)
+                  image_head=args.image_head, min_ratio=args.min_ratio)
+    state = init["model"]
+    if init_genera is not None and init_genera != genera:
+        fam = pd.read_parquet(root / "manifests/species.parquet", columns=["genus", "family"]).drop_duplicates("genus")
+        state, n_new = remap_genera(state, init_genera, genera, dict(zip(fam.genus, fam.family)))
+        print(f"genus rows remapped {len(init_genera)} -> {len(genera)} genera ({n_new} new, from their family's mean; "
+              f"{len(set(init_genera) - set(genera))} dropped)", flush=True)
+    if args.min_ratio != init["args"].get("min_ratio", 0.2):
+        print(f"anchors: min_ratio {init['args'].get('min_ratio', 0.2)} -> {args.min_ratio} (box regression re-learns the scales)", flush=True)
+    missing, unexpected = model.load_state_dict(state, strict=False)
     print(f"init from {args.init}: missing {sorted({k.split('.')[1] + '.' + k.split('.')[2] for k in missing})}, "
           f"unexpected {sorted({k.split('.')[1] + '.' + k.split('.')[2] for k in unexpected})}", flush=True)
     fresh_head = any(k.startswith("head.image_cls") for k in missing)      # else: continuing a trained head
@@ -677,11 +900,18 @@ def main() -> None:
             extra.update(composite_eval(model, net, val_comp, size, anchors0, dev, mean, std, args.workers_img))
             extra.update(negative_eval(model, net, root, negs_val, size, dev, mean, std, args.workers_img))
             extra.update(trait_eval(model, net, trait_val, size, len(genera), dev, mean, std, args.workers_img))
+            if d046:
+                extra["scene_ap50"] = evaluate(model, net, DataLoader(BoxSet(root, scene_val, size, False), batch_size=64,
+                                               num_workers=args.workers_img, collate_fn=collate), anchors0, size, family_of, dev,
+                                               mean, std, False, amp)["agnostic_ap50"]
+                extra.update(oi_eval(model, net, oi_val, size, anchors0, dev, mean, std, args.workers_img))
         row = {**{k: v for k, v in m.items() if k != "n"}, **{f"regional_{k}": v for k, v in r.items() if k != "n"}, **mo, **en, **extra}
         log.log(step, "val", **row)
         print(f"step {step} val " + " ".join(f"{k} {v:.4f}" for k, v in row.items()), flush=True)
         base = {"encounter": en["encounter_top1"], "pool": en["pool_top1"], "val": m["image_genus_top1"]}[args.select]
         boxes_term = extra["composite_ap50"] if live else mo["mosaic_agnostic_ap50"]
+        if live and args.select_boxes == "mean":
+            boxes_term = (extra["composite_ap50"] + extra["scene_ap50"] + extra["oi_ap50"]) / 3
         key = base + args.box_weight * boxes_term - (args.neg_weight * extra["neg_box_rate"] if live else 0.0)
         if key > best:
             best, best_step = key, step
@@ -698,15 +928,18 @@ def main() -> None:
     for ep in range(args.epochs):
         for ximg, y, tidx, tp in dl_img:
             try:
-                bimgs, boxes, labels, genus = next(it_box)
+                batch = next(it_box)
             except StopIteration:
                 it_box = iter(dl_box)
-                bimgs, boxes, labels, genus = next(it_box)
+                batch = next(it_box)
+            bimgs, boxes, labels, genus = batch[:4]
             nbx = len(bimgs)
             x = ((torch.cat([bimgs, ximg]).to(dev, non_blocking=True).float() / 255) - mean) / std
             box_on = genus[3].tolist() if live else [True] * nbx
-            targets = [{"boxes": b.to(dev, non_blocking=True), "labels": l.to(dev, non_blocking=True), "box_loss": bool(o)}
-                       for b, l, o in zip(boxes, labels, box_on)]
+            ign, neg_ok = batch[4] if live else ([None] * nbx, [True] * nbx)
+            targets = [{"boxes": b.to(dev, non_blocking=True), "labels": l.to(dev, non_blocking=True), "box_loss": bool(o),
+                        "ignore": None if g is None or not len(g) else g.to(dev, non_blocking=True), "negatives": bool(n)}
+                       for b, l, o, g, n in zip(boxes, labels, box_on, ign, neg_ok)]
             with amp:
                 out = forward_raw(net, x)
             l_box, l_cls = ssd_loss_batched(model, {k: out[k][:nbx] for k in ("cls_logits", "bbox_regression")}, anchors0, targets,
@@ -768,6 +1001,11 @@ def main() -> None:
         test.update(composite_eval(model, net, test_comp, size, anchors0, dev, mean, std, args.workers_img))
         test.update(negative_eval(model, net, root, negs_test, size, dev, mean, std, args.workers_img))
         test.update(trait_eval(model, net, trait_items(root, gi, "test"), size, len(genera), dev, mean, std, args.workers_img))
+        sc = [it for it in scene_slice(root, splits["test"], "test") if it[0] not in fb_paths]
+        for tag, app in (("scene", False), ("scene_app", True)):
+            test[f"{tag}_ap50"] = evaluate(model, net, DataLoader(BoxSet(root, sc, size, False), batch_size=64, num_workers=args.workers_img,
+                                                                 collate_fn=collate), anchors0, size, family_of, dev, mean, std, False, amp, app)["agnostic_ap50"]
+        test.update(oi_eval(model, net, oi_items(root, "test"), size, anchors0, dev, mean, std, args.workers_img))
     det = evaluate(model, net, DataLoader(BoxSet(root, splits["test"], size, False), batch_size=64, num_workers=args.workers_img,
                                           collate_fn=collate), anchors0, size, family_of, dev, mean, std, False, amp)
     print(f"best step {best_step}: test {test} | detection {det}", flush=True)
@@ -777,7 +1015,7 @@ def main() -> None:
                 **{f"val_{k}": round(v, 4) for k, v in ck["val"].items()},
                 **{f"test_{k}": round(v, 4) for k, v in test.items() if k != "n"},
                 mosaic=args.mosaic, encounter_mix=args.encounter_mix, encounter_power=args.encounter_power, select=args.select, test_agnostic_ap50=round(det["agnostic_ap50"], 4), test_ap50=round(det["ap50"], 4),
-                preset=args.preset, size=size)
+                preset=args.preset, size=size, oi=args.oi, scene=args.scene, min_ratio=args.min_ratio, boxes=args.boxes)
     log.close()
 
 

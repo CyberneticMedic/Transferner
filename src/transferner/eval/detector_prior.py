@@ -59,7 +59,7 @@ def main() -> None:
     else:
         dev = "cuda"
         model = build(G, cfg["model"]["backbone"], size, pretrained=False, head="shared", image_aux=True,
-                      image_head=ck["args"].get("image_head", 0))
+                      image_head=ck["args"].get("image_head", 0), min_ratio=ck["args"].get("min_ratio", 0.2))
         model.load_state_dict(ck["model"])
         mean = torch.tensor(model.backbone.mean, device=dev).view(1, 3, 1, 1)
         std = torch.tensor(model.backbone.std, device=dev).view(1, 3, 1, 1)

@@ -384,3 +384,39 @@ Newest at the bottom. Format: ID · date · decision · why.
     - Warnings with `probe_d045a` and `mnv4_live_d044` (regional test, `results/tables/warning_flags_d045a.csv`): capture banner (0.7 rules) misses 0.10% of toxic photos (serious 0.10%), false alarms 27.6%; live toxic row misses 0.55% (`mnv4_live448`: 1.2%), false alarms 27.4%.
   - **Published 2026-11-24: bundle 0.7** (`mnv4_live_d044` INT8 + `_rg` in group `app:11`, `probe_d045a`, 4,531 species, presence gate 0.453 / 0.172, `min_app` 0) **and app 0.7** (versionCode 11). Checked before publishing against a private staging server: app 0.7 downloads it and runs the regions graph; the 0.4.3 and 0.6 sources (git worktrees at e5c36b7, 22405a0) download it, load the 3-output detector and match the Python goldens (differences only where the trait wording changed or the 0.4.3 test reads the published bundle instead of the goldens' pin).
   - **Next:** the month-balanced pull (running), then the final species model with `test_season`; the next live retrain with the clean teacher, the new genera and the box-loss regression above.
+
+## D-046 More real distant and cluttered plants for the live detector (2026-11-24, results pending)
+- **Request:** "See if you can find additional data that has distant plants or plants that are in a cluttered scene to increase precision and generalization."
+- **Why:** mining our own boxes showed `mnv4_live_d044` scores 0.86 box AP50 on composites but 0.19 on photos whose largest plant fills under 10% of the frame and 0.27 on scene photos (0.72 on single large plants). 95% of photos were never boxed. 5,177 train trunk boxes sat on herbs or grasses. 12.2% of real boxes have no anchor at IoU 0.5 (the smallest anchor is 90 px at 448). A 3-agent survey and adversarial check of 15 sources kept one source of real distant plant boxes, plus one audit source.
+- **Data:**
+  - **Open Images V7 plant boxes** (`data/openimages_plants.py`; CC BY 4.0 annotations, CC BY 2.0 photos, license and author kept per photo): 100,000 train and 3,736 validation photos. In 64% of them the largest plant box is under 10% of the frame. Whole Tree / Plant / Palm / Houseplant / Maple / Willow boxes are class-agnostic targets. Group boxes and per-flower classes are ignore regions. Depictions are dropped. Hard negatives are mined only where Tree and Plant were both human-verified (60%), since OI boxes are exhaustive only for verified classes. The validation photos split by hash into val and test halves.
+  - **Visual Genome audit of the plant-free frames** (`negatives.py --vg`): 1,883 of 55,524 COCO plant_free frames (3.4%) carry a VG tree, bush, flower, grass or leaf object. They become kind `plant_vg`, which no consumer reads.
+  - **Habit prompts** (`pseudo_boxes.py --habit-prompts`): OWLv2 prompts are limited to the genus' USDA growth habits (no trunk on forbs; grass, fern and moss prompts). Coverage:
+    - 318K new photos: the 40 unboxed perennial genera, the never-boxed regional photos, and BioCLIP-scene-ranked ToL photos.
+    - 23,034 old photos re-boxed, because they had a box their habit rules out.
+  - **BioCLIP box check** (`data/box_check.py`): every OWLv2 box crop is scored with the teacher probe. A box is dropped when the photo's genus ranks below 10 on the crop while BioCLIP does name it on the whole photo. The result is `manifests/boxes_v3.parquet`.
+- **Trainer** (`train_live_head.py --preset d046`):
+  - Boxed-stream mix: composites 0.40 → 0.25, plus Open Images 0.15 and real scenes 0.15. Real scenes are our photos with the largest box under 10%, boxes covering under 25%, or 3+ boxes.
+  - SSD loss: class-agnostic positives (`-log(1 - P(background))`), ignore regions, and per-image no-negatives (`train_detector.ssd_loss_batched`).
+  - Anchors start at 0.1 instead of 0.2, settled by a 3,000-step A/B.
+  - New genera start from their family's mean row.
+  - New yardsticks: `scene_ap50` (the mining's fixed real-scene slice) and `oi_ap50` / `oi_app_ap50` (detections on ignore regions removed). Checkpoints are selected on pool top-1 + 0.25 × the mean of composite, scene and OI AP50.
+- **Species model with the month-balanced photos** (`probe_v2`, 37,198 new embeddings), test 176,590 / test_season 5,012:
+
+  | | d030 | `probe_d045a` (shipped) | `probe_v2` |
+  |---|---|---|---|
+  | Test top-1 | 85.46% | 85.57% | 85.33% |
+  | test_season top-1 | 85.63% | 85.77% | 86.03% |
+  | Test ECE | 0.006 | 0.006 | 0.005 |
+
+  `probe_v2` is not better: −0.24 pt on the large test and +0.26 pt on the small season set, which is inside its ±1.2 pt interval. Bundle 0.7 keeps `probe_d045a`, which is also the live retrain's teacher.
+
+## D-047 The app reaches the bundle server over the tailnet (2026-11-24)
+- **Request:** "Can you make the app open over the tailnet."
+- **Server:** no change was needed. `bundle_server.py` binds 0.0.0.0:8765, and Tailscale's netfilter mode (on) accepts `tailscale0` ahead of ufw. The page uses relative links, so it opens at the machine's MagicDNS name. Plain HTTP inside the tailnet travels over WireGuard.
+- **App 0.7.1** (versionCode 12), `data/Servers.kt`:
+  - Candidates, in order: the address saved in Setup, the home-network default, then the tailnet addresses from `app/local.properties` (`transferner.tailnet`, gitignored, because the repo is public).
+  - All candidates are probed (`latest.json`, 4 s) at once, and the first in that order that answers serves the update check, the bundle download, the app update and the log upload. At home it stays on the LAN.
+  - Settings names the server in use.
+  - Checks: `ServersTest`, plus the end-to-end `DownloadTest` against the MagicDNS name.
+- **Rollout:** published on the bundle server. App 0.7 knows only the LAN address, so it needs one update: in-app at home, or from the page over the tailnet.

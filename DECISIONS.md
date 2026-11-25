@@ -385,7 +385,7 @@ Newest at the bottom. Format: ID · date · decision · why.
   - **Published 2026-11-24: bundle 0.7** (`mnv4_live_d044` INT8 + `_rg` in group `app:11`, `probe_d045a`, 4,531 species, presence gate 0.453 / 0.172, `min_app` 0) **and app 0.7** (versionCode 11). Checked before publishing against a private staging server: app 0.7 downloads it and runs the regions graph; the 0.4.3 and 0.6 sources (git worktrees at e5c36b7, 22405a0) download it, load the 3-output detector and match the Python goldens (differences only where the trait wording changed or the 0.4.3 test reads the published bundle instead of the goldens' pin).
   - **Next:** the month-balanced pull (running), then the final species model with `test_season`; the next live retrain with the clean teacher, the new genera and the box-loss regression above.
 
-## D-046 More real distant and cluttered plants for the live detector (2026-11-24, results pending)
+## D-046 More real distant and cluttered plants for the live detector (2026-11-24, results 2026-11-25)
 - **Request:** "See if you can find additional data that has distant plants or plants that are in a cluttered scene to increase precision and generalization."
 - **Why:** mining our own boxes showed `mnv4_live_d044` scores 0.86 box AP50 on composites but 0.19 on photos whose largest plant fills under 10% of the frame and 0.27 on scene photos (0.72 on single large plants). 95% of photos were never boxed. 5,177 train trunk boxes sat on herbs or grasses. 12.2% of real boxes have no anchor at IoU 0.5 (the smallest anchor is 90 px at 448). A 3-agent survey and adversarial check of 15 sources kept one source of real distant plant boxes, plus one audit source.
 - **Data:**
@@ -410,6 +410,26 @@ Newest at the bottom. Format: ID · date · decision · why.
   | Test ECE | 0.006 | 0.006 | 0.005 |
 
   `probe_v2` is not better: −0.24 pt on the large test and +0.26 pt on the small season set, which is inside its ±1.2 pt interval. Bundle 0.7 keeps `probe_d045a`, which is also the live retrain's teacher.
+- **Box check result:** 77.4% of 709,015 real boxes kept. By box area: ≥ 50% of the frame 99.9%, 10–50% 91.8%, 2–10% 67.3%, < 2% 42.2%. By prompt, leaf 57%, fruit 43% and trunk 64% boxes are dropped most. 20,951 photos lost every box and moved to the unboxed stream. `boxes_v3`: 647,737 boxes on 429,260 photos, 1,398 genera with train boxes.
+- **Anchor A/B** (3,000 steps from `mnv4_live_d044`, val): min_ratio 0.1 vs 0.2 gives scene AP50 0.520 vs 0.501, OI 0.244 vs 0.232, composites 0.938 vs 0.880, plant-free raw box rate 10.1% vs 14.9%, selection metric 0.935 vs 0.917. 0.1 kept.
+- **Full run** `mnv4_live_d046` (50,451 steps, best at 44,000). Test split, both models scored on `boxes_v3` and on d044's genera (`--eval-genera`):
+
+  | | `mnv4_live_d044` (shipped) | `mnv4_live_d046` |
+  |---|---|---|
+  | Real-scene box AP50, app rules | 0.439 | 0.542 |
+  | Open Images box AP50, app rules | 0.136 | 0.299 |
+  | Real-photo box AP50, class-agnostic, app rules | 0.614 | 0.668 |
+  | Composite box AP50 | 0.879 | 0.954 |
+  | Mosaic box AP50 | 0.587 | 0.551 |
+  | Whole-frame genus top-1 | 77.39% | 80.46% |
+  | Pool top-1 | 78.39% | 82.10% |
+  | Encounter top-1 | 80.32% | 83.82% |
+  | Trait-genus recall | 81.02% | 85.27% |
+  | Plant-free frames with any raw box ≥ 0.25 | 5.2% | 8.4% |
+
+  - **Plant-free frames, with the app's gate** (`presence_gate`, float checkpoints, val, 6,000 plant-free frames and 6,000 degraded regional plant frames): a box is shown on 0.93% of plant-free frames vs 1.28%, and on 96.1% of degraded plant frames vs 94.4%. The rise in raw boxes is gated away because the whole-frame mass on plant-free frames halved (median 0.0098 → 0.0045). The live-warning gate passes 2.6% of plant-free frames vs 5.2%, and the toxic warning misses 0.8% of toxic-genus frames vs 1.5% before gating. Thresholds: boxes 0.451 → 0.495, warn 0.169 → 0.246 (to be re-picked on the INT8 graph).
+  - **Mosaic AP50 regression** (−3.6 pt) is the only one. Not investigated. Mosaics tile four test photos with their full-frame fallback boxes, which the trainer no longer learns.
+  - **Known gap:** a box the check drops just disappears, so on the 73,843 photos that keep other boxes, 124,274 rejected boxes (median 1.9% of the frame; 64% leaves, 14% wildflowers, 6% trees) are background to the SSD loss. Passing them as ignore regions is the follow-up.
 
 ## D-047 The app reaches the bundle server over the tailnet (2026-11-24)
 - **Request:** "Can you make the app open over the tailnet."

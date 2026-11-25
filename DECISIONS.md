@@ -440,3 +440,27 @@ Newest at the bottom. Format: ID · date · decision · why.
   - Settings names the server in use.
   - Checks: `ServersTest`, plus the end-to-end `DownloadTest` against the MagicDNS name.
 - **Rollout:** published on the bundle server. App 0.7 knows only the LAN address, so it needs one update: in-app at home, or from the page over the tailnet.
+
+## D-048 Bundle 0.8: the D-046 live model, with the INT8 logit shift (2026-11-25)
+- **Request:** "Send it" (the user, after the D-046 results).
+- **INT8 logit shift** (`export/detector_app.py --logit-shift auto`, the default for INT8; audit `live_int8_precision`). The INT8 `image_logits` output spanned the whole logit range, so near-equal genera tied and the app kept the alphabetically first. The whole-frame head's last conv (and the window copy's) now gets +c in its bias with a fused ReLU. The app only reads these outputs through softmax (live label, focus prior, warnings, presence, walk windows), which ignores the shift, and old apps ignore the sidecar's new `logit_shift` key.
+  - c = 16 − the 0.5% quantile of the per-frame top logit on the 256 calibration photos = 38.1 for `mnv4_live_d046` (top logits run −24 to −5). Every genus within 16 of a frame's top stays exact. A clamped genus keeps at most e^−16 of the top's probability.
+  - Output scale: image_logits 0.366 → 0.116, region_logits 0.638 → 0.111 (d044 → d046 sidecars).
+  - `tests/test_detector_live.py`: the softmax and the other outputs are unchanged and the trained model is not modified.
+- **Export** (`mnv4_live_d046`, regional test 11,812 photos): float 80.51% → INT8 79.22% whole-frame genus top-1 (−1.30 ± 0.38 pt paired; d044 lost 1.45 pt on its own test), box AP50 0.637 → 0.633, top-1 ties 1.96% of frames. Window labels agree with float on 86.3% of 64 frames (d044: 86.1%).
+- **Presence gate on the INT8 graph:** boxes 0.5233, warnings 0.1982 (0.7: 0.4533 / 0.172). Plant-free val frames passing the box gate 1.18% (0.7: 1.73%), the warning gate 2.75% (5.33%); toxic warnings missed before gating 0.77% (1.52%), and the gate adds 0.1 pt.
+- **Live warnings** (float logits, regional test, `results/tables/warning_flags_d046.csv`, 0.8 thresholds): toxic photos missed 0.63% (0.7: 0.67%), serious 0.50% (0.67%), false alarms 25.0% (27.3%). Capture is unchanged (same probe).
+- **Focus chip** rebuilt for the 1,398 genera (`eval/focus_prior.py --name mnv4_live_d046`, eps 0.01): right focus 80.4% → 82.9% test top-1.
+- **Bundle 0.8:** `mnv4_live_d046` INT8 (3 outputs) plus `_rg` in group `app:11`, `probe_d045a`, 4,531 species, 211 forage genera, `min_app` 0. 4,201 files, 1,691 MB; a phone on 0.7 fetches only the changed files. Goldens rewritten (0.7's are in the scratchpad). The golden photo's detector top 5 has no tie now (0.5: Polemonium and Mertensia both 0.0949).
+- **Checks before publishing,** against a private staging server on 127.0.0.1:
+  - App 0.7.1: all 50 unit tests pass. It downloads 0.8 and picks the regions detector.
+  - Apps 0.4.3 and 0.6 (worktrees at e5c36b7, 22405a0): both download 0.8, and the detector golden test passes. The 0.4.3 test reads detector.json from the *published* bundle, so it was run with a data folder where bundle and goldens are both 0.8. The only failure is the known trait wording ("Edible as described" against "Fruit edible as described"), as for 0.7.
+- **Published 2026-11-25.** `latest.json` → 0.8, checked over the LAN and the tailnet.
+
+## D-049 D-046b: the box check's rejects as ignore regions (2026-11-25, results pending)
+- **Why:** D-046 dropped rejected boxes without replacing them, so on 73,843 photos that keep other boxes, 124,274 rejected boxes counted as background. Most are leaves, but 14% are wildflowers and 6% trees, often a neighbouring plant of another genus, which is exactly the distant plant the user asked for.
+- **Change:**
+  - `box_check.py` writes them to `manifests/boxes_v3_ignore.parquet` (boxes_v3 is byte-identical).
+  - `train_live_head.py --ignore-boxes` passes them as ignore regions on the real-photo and scene streams: 101,742 boxes on 60,382 train photos. The SSD loss already blocks negatives at IoU ≥ 0.4 or IoA ≥ 0.5 with an ignore region.
+  - `BoxSet(ignore=...)` carries them through the same crop as the targets (label 0 marks them; `tests/test_detector_live.py`).
+- **Run:** `mnv4_live_d046b`, the D-046 recipe from `mnv4_live_d044` with only `--ignore-boxes` added, so it compares directly with `mnv4_live_d046`. The first launch died of HIP OOM because a GPU eval was started beside it, and it was restarted alone.

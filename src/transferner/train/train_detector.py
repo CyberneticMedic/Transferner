@@ -427,9 +427,11 @@ def photometric(kind: str):
 
 class BoxSet(Dataset):
     def __init__(self, root, items: list, size: int, train: bool, low_light_p: float = 0.0, photo: str = "ssd",
-                 zoom_out: bool = True, wb_p: float = 0.0):
+                 zoom_out: bool = True, wb_p: float = 0.0, ignore: dict | None = None):
+        """ignore: {path: frac boxes} that are neither positive nor negative for the SSD loss (D-046b: boxes the
+        BioCLIP check rejected on photos that keep others); they ride through the same crop as the targets."""
         self.root, self.items, self.size, self.train, self.low_light_p = root, items, size, train, low_light_p
-        self.wb_p = wb_p
+        self.wb_p, self.ignore = wb_p, ignore or {}
         if train:
             self.tf = v2.Compose([
                 photometric(photo),
@@ -446,18 +448,28 @@ class BoxSet(Dataset):
         return len(self.items)
 
     def __getitem__(self, i):
+        return self.sample(i)[:4]
+
+    def sample(self, i):
+        """-> img, boxes, labels, image genus label, ignore boxes (pixels; empty without self.ignore)."""
         path, frac, lab = self.items[i]
         img = decode_image(str(self.root / path), mode=ImageReadMode.RGB)
         h, w = img.shape[-2:]
-        boxes = tv_tensors.BoundingBoxes(torch.tensor(frac) * torch.tensor([w, h, w, h]), format="XYXY",
+        ig = self.ignore.get(path)
+        n_ig = 0 if ig is None else len(ig)
+        allf = np.concatenate([frac, ig]).astype(np.float32) if n_ig else frac
+        alll = np.concatenate([lab, np.zeros(n_ig, lab.dtype)]) if n_ig else lab    # 0 marks an ignore box
+        boxes = tv_tensors.BoundingBoxes(torch.tensor(allf) * torch.tensor([w, h, w, h]), format="XYXY",
                                          canvas_size=(h, w))
-        img, tgt = self.tf(tv_tensors.Image(img), {"boxes": boxes, "labels": torch.as_tensor(lab)})
+        img, tgt = self.tf(tv_tensors.Image(img), {"boxes": boxes, "labels": torch.as_tensor(alll)})
         img = img.as_subclass(torch.Tensor)
         if self.train:
             if self.wb_p and float(torch.rand(())) < self.wb_p:
                 img = white_balance(img)
             img = field_degrade(img, self.size, self.low_light_p)
-        return img, tgt["boxes"].as_subclass(torch.Tensor).float(), tgt["labels"].long(), int(lab[0])
+        b, l = tgt["boxes"].as_subclass(torch.Tensor).float(), tgt["labels"].long()
+        m = l == 0
+        return img, b[~m], l[~m], int(lab[0]), b[m]
 
 
 def collate(batch):

@@ -168,12 +168,13 @@ class LiveBoxSet(Dataset):
     Returns (img, boxes, labels, soft) with soft = (genus idx[K_SOFT], weight[K_SOFT], uniform, box_loss)."""
 
     def __init__(self, root, items, size, low_light_p, photo, wb_p, p_comp, p_neg, negs, vegs, fallback_off, comp_items,
-                 p_oi=0.0, oi_items=(), p_scene=0.0, scene_items=()):
+                 p_oi=0.0, oi_items=(), p_scene=0.0, scene_items=(), ignore=None):
         self.root, self.items, self.size = root, items, size
-        self.full = BoxSet(root, items, size, True, low_light_p, photo, zoom_out=p_comp == 0, wb_p=wb_p)
+        self.full = BoxSet(root, items, size, True, low_light_p, photo, zoom_out=p_comp == 0, wb_p=wb_p, ignore=ignore)
         self.p_comp, self.p_neg, self.negs, self.vegs = p_comp, p_neg, negs, vegs
         self.p_oi, self.oi_items, self.p_scene, self.scene_items = p_oi, oi_items, p_scene, scene_items
-        self.scene = BoxSet(root, list(scene_items), size, True, low_light_p, photo, zoom_out=True, wb_p=wb_p) if p_scene else None
+        self.scene = (BoxSet(root, list(scene_items), size, True, low_light_p, photo, zoom_out=True, wb_p=wb_p, ignore=ignore)
+                      if p_scene else None)
         self.oi_tf = v2.Compose([photometric(photo), v2.RandomResizedCrop(size, scale=(0.4, 1.0), antialias=True),
                                  v2.RandomHorizontalFlip(), v2.SanitizeBoundingBoxes(min_size=2)])
         self.fallback_off, self.comp_items = fallback_off, comp_items
@@ -266,13 +267,13 @@ class LiveBoxSet(Dataset):
         if r < self.p_neg + self.p_comp + self.p_oi:
             return self.openimages()
         if r < self.p_neg + self.p_comp + self.p_oi + self.p_scene:
-            img, b, lab, g = self.scene[int(torch.randint(0, len(self.scene_items), ()))]
-            return img, b, lab, self._soft([g - 1], [1.0]), none
-        img, b, lab, g = self.full[i]
+            img, b, lab, g, ig = self.scene.sample(int(torch.randint(0, len(self.scene_items), ())))
+            return img, b, lab, self._soft([g - 1], [1.0]), (ig, True)
+        img, b, lab, g, ig = self.full.sample(i)
         off = self.items[i][0] in self.fallback_off
         if off:
             b, lab = torch.zeros(0, 4), torch.zeros(0, dtype=torch.long)
-        return img, b, lab, self._soft([g - 1], [1.0], box_loss=not off), none
+        return img, b, lab, self._soft([g - 1], [1.0], box_loss=not off), (ig, True)
 
 
 def box_iou_1(b: torch.Tensor, others: torch.Tensor) -> torch.Tensor:
@@ -683,6 +684,8 @@ def main() -> None:
                          "boxes selected on the mean of composite, scene and Open Images AP50")
     ap.add_argument("--oi", type=float, default=0.0, help="share of boxed samples that are Open Images plant photos (D-046)")
     ap.add_argument("--scene", type=float, default=0.0, help="share of boxed samples that are real-scene photos (D-046)")
+    ap.add_argument("--ignore-boxes", default="", help="boxes ignored by the SSD loss on train photos, e.g. "
+                    "manifests/boxes_v3_ignore.parquet (D-046b: the box check's rejects on photos that keep other boxes)")
     ap.add_argument("--min-ratio", type=float, default=0.0, help="smallest anchor scale (default: the init checkpoint's, else 0.2)")
     ap.add_argument("--select-boxes", choices=["composite", "mean"], default="composite",
                     help="selection box term: composite AP50, or the mean of composite, scene and Open Images AP50")
@@ -811,8 +814,16 @@ def main() -> None:
             print(f"D-046 boxed stream: Open Images plants {args.oi} ({len(oi_tr):,} photos, "
                   f"{sum(o[3] for o in oi_tr):,} with hard negatives), real scenes {args.scene} ({len(scene_tr):,} of "
                   f"{len(comp_items):,} real-box photos), anchors from {args.min_ratio}", flush=True)
+        ign = {}
+        if args.ignore_boxes:
+            ib = pd.read_parquet(root / args.ignore_boxes, columns=["uuid", "x0", "y0", "x1", "y1"]).merge(
+                pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
+            ib = ib[ib.path.isin({it[0] for it in train})]
+            ign = {p: d[["x0", "y0", "x1", "y1"]].to_numpy(np.float32) for p, d in ib.groupby("path", sort=False)}
+            print(f"D-046b ignore regions: {len(ib):,} rejected boxes on {len(ign):,} of {len(train):,} train photos "
+                  f"(neither positive nor negative)", flush=True)
         box_ds = LiveBoxSet(root, train, size, args.low_light, args.photo, args.wb, args.composite, args.negatives,
-                            negs_tr, vegs_tr, off, comp_items, args.oi, oi_tr, args.scene, scene_tr)
+                            negs_tr, vegs_tr, off, comp_items, args.oi, oi_tr, args.scene, scene_tr, ignore=ign)
         box_collate = collate_live
         vegs_val = negm[(negm.kind == "vegetation") & (negm.split == "val")].path.to_numpy()
         negs_val = negm[(negm.kind == "plant_free") & (negm.split == "val")].sample(1500, random_state=0).path.to_numpy()

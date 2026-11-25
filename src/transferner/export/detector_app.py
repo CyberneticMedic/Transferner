@@ -12,6 +12,12 @@ needs far less, so this graph emits:
   region_logits (1, 9, G)  with --regions (D-044): the whole-frame head on 9 overlapping windows of the stride-32
                            map (3 x 3, each about 57% of the frame per side), +1.4% compute. Walk mode names
                            and draws the window behind an edible alert (read-only audit, edible_targeting_app-05).
+Logit shift (--logit-shift, D-048; audit live_int8_precision): the INT8 image_logits output spans the whole logit
+range (scale ~0.3), so 4.6% of frames tied at top-1 and the app kept the alphabetically first genus. The last
+conv of the whole-frame head (and of the window copy) gets +c folded into its bias with a fused ReLU: the output
+range shrinks to [0, top + c] while softmax, the only thing the app computes from these logits, ignores the shift.
+c = W - (0.5% quantile of the per-frame top logit on the calibration photos), so every genus within W (16) of a
+frame's top stays unclamped; the clamped ones each keep at most e^-16 of the top's probability.
 Input as in detector_litert: normalised (1, 3, 320, 320) NCHW; full INT8 has int8 input, so the app quantises
 pixels with a per-channel lookup table built from the sidecar's mean, std, scale and zero point.
 
@@ -55,13 +61,21 @@ def region_grid(h: int) -> tuple[int, int]:
 
 
 class AppExport(nn.Module):
-    def __init__(self, ssd, float_image_head: bool = False, regions: bool = False):
+    def __init__(self, ssd, float_image_head: bool = False, regions: bool = False, logit_shift: float = 0.0):
         super().__init__()
+        import copy
         self.backbone, self.head = ssd.backbone, ssd.head
-        self.regions = regions
+        self.regions, self.logit_shift = regions, float(logit_shift)
         if regions:
-            import copy
             self.region_cls = copy.deepcopy(ssd.head.image_cls[1:])
+        self.image_cls = None
+        if self.logit_shift:
+            assert not float_image_head and ssd.head.image_cls is not None, "--logit-shift needs the INT8 whole-frame head"
+            self.image_cls = copy.deepcopy(ssd.head.image_cls)
+            with torch.no_grad():
+                self.image_cls[-1].bias += self.logit_shift
+                if regions:
+                    self.region_cls[-1].bias += self.logit_shift
         self.float_image_head = False
         ic = getattr(self.head, "image_cls", None)
         if float_image_head and ic is not None:
@@ -90,6 +104,8 @@ class AppExport(nn.Module):
         if self.float_image_head:
             x = feats[1].mean(dim=(2, 3))
             image_logits = torch.matmul(torch.relu(torch.matmul(x, self.w1.t()) + self.b1), self.w2.t()) + self.b2
+        elif self.image_cls is not None:
+            image_logits = torch.relu(self.image_cls(feats[1])).flatten(1)   # ReLU right after the conv: fused
         else:
             image_logits = h.image_logits(feats)
         if not self.regions:
@@ -99,6 +115,8 @@ class AppExport(nn.Module):
         # windows' coarser int8 scale (0.27 -> 0.60). A copy is quantised on its own (+3 MB).
         k, s = region_grid(feats[1].shape[-1])
         r = self.region_cls(F.avg_pool2d(feats[1], kernel_size=k, stride=s))  # (B, G, 3, 3)
+        if self.logit_shift:
+            r = torch.relu(r)
         regions = r.flatten(2).permute(0, 2, 1)                                 # (B, 9, G), row-major windows
         return image_logits, torch.cat(obj, 1), h.regression_head(feats), regions
 
@@ -167,6 +185,9 @@ def main() -> None:
     ap.add_argument("--split", default="test")
     ap.add_argument("--out-dir", default=None,
                     help="write the .tflite and sidecar here instead of artifacts/detector/<name> (trial runs)")
+    ap.add_argument("--logit-shift", default="auto",
+                    help="'auto' (W=16 below the calibration photos' 0.5%% top-logit quantile), a number, or 0 (off); "
+                         "INT8 only (D-048)")
     ap.add_argument("--calib", type=int, default=256)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--min-free-gb", type=float, default=8.0)
@@ -200,7 +221,19 @@ def main() -> None:
     run_score = lambda run, sink=None: score(run, dl, model.box_coder, anchors0, size, family_of, mean, std, sink=sink)
     fl_sink, q_sink = {}, {}
 
-    exp = AppExport(model, args.float_image_head, args.regions).eval()
+    shift, shift_info = 0.0, None
+    if args.recipe == "int8" and not args.float_image_head and args.logit_shift not in ("0", "0.0", "off"):
+        if args.logit_shift == "auto":
+            with torch.no_grad():
+                top = torch.cat([Net(model)(cx[i:i + 32])["image_logits"].float().amax(1) for i in range(0, len(cx), 32)])
+            shift = round(16.0 - float(torch.quantile(top, 0.005)), 2)
+            shift_info = {"c": shift, "window": 16.0, "calib_top_q005": round(float(torch.quantile(top, 0.005)), 3),
+                          "calib_top_max": round(float(top.max()), 3), "out_range": round(float(top.max()) + shift, 3)}
+        else:
+            shift = float(args.logit_shift)
+            shift_info = {"c": shift}
+        print(f"logit shift: relu(logits + {shift}) on image_logits{' and region_logits' if args.regions else ''} {shift_info}", flush=True)
+    exp = AppExport(model, args.float_image_head, args.regions, shift).eval()
     if args.regions:
         assert model.head.image_cls is not None, "--regions needs the whole-frame head (train_live_head)"
     with torch.no_grad():                      # the app graph must equal the training graph's postprocessing
@@ -209,7 +242,11 @@ def main() -> None:
         ref = Net(model)(x)
         ref_obj = 1 - ref["cls_logits"].float().softmax(-1)[..., 0]
         err = float((ob - ref_obj).abs().max())
-        assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref["image_logits"], atol=1e-5), err
+        ref_il = torch.relu(ref["image_logits"] + shift) if shift else ref["image_logits"]
+        assert err < 1e-4 and torch.equal(bx, ref["bbox_regression"]) and torch.allclose(il, ref_il, atol=1e-4), err
+        if shift:                              # softmax unchanged where it matters: top-5 equal, probabilities close
+            p0, p1 = ref["image_logits"].softmax(-1), il.softmax(-1)
+            assert torch.equal(p0.topk(5, 1).indices, p1.topk(5, 1).indices) and float((p0 - p1).abs().max()) < 1e-3
         print(f"app graph == training graph (objectness max err {err:.1e})", flush=True)
         t0 = time.time()
         fl = run_score(lambda x: exp(x)[:3], fl_sink)
@@ -230,7 +267,7 @@ def main() -> None:
             for i in range(len(cx)):
                 m(cx[i:i + 1])
         m = convert_pt2e(m, fold_quantize=False)
-        row.update(calib=args.calib, act_observer=args.act_observer, float_image_head=args.float_image_head)
+        row.update(calib=args.calib, act_observer=args.act_observer, float_image_head=args.float_image_head, logit_shift=shift)
     else:
         m = exp
 
@@ -285,6 +322,9 @@ def main() -> None:
     yf, yq = torch.cat(fl_sink["y"]), torch.cat(q_sink["y"])
     assert torch.equal(yf, yq), "float and converted runs saw different photos"
     paired = paired_agreement(torch.cat(fl_sink["logits"]).numpy(), torch.cat(q_sink["logits"]).numpy(), yf.numpy())
+    t2 = torch.cat(q_sink["logits"]).topk(2, 1).values
+    paired["top1_ties"] = round(float((t2[:, 0] == t2[:, 1]).float().mean()), 4)
+    print(f"INT8 top-1 ties: {paired['top1_ties']:.2%} of frames", flush=True)
     print(f"paired float vs {tag} on {paired['n']} {args.split} photos: right only in float {paired['ref_only']}, only "
           f"converted {paired['test_only']} (McNemar p {paired['mcnemar_p']:.2g}), top-1 "
           f"{100 * paired['delta_top1']:+.2f} +- {100 * paired['delta_ci95']:.2f} pt, agreement {paired['top1_agree']:.4f}, "
@@ -319,6 +359,7 @@ def main() -> None:
         "postprocess": {"objectness_topk": 300, "nms_iou": 0.55, "max_boxes": 100},
         "genera": genera, "families": families, "family_of": [int(v) for v in family_of],
         **({"regions": regions_meta(model, size)} if args.regions else {}),
+        **({"logit_shift": shift_info} if shift else {}),
         "check": {"split": args.split, "images": args.images, "float": fl, "litert": got, "regions": region_check,
                   "paired": paired, "checkpoint": f"{args.name}/{args.ckpt}", "epoch": int(ck["epoch"])},
     }

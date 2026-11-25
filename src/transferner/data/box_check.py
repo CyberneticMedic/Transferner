@@ -13,6 +13,8 @@ Box set v3 (--out): manifests/boxes.parquet, with the photos re-boxed under habi
 every photo with a box its genus' growth habit rules out, e.g. a trunk on a forb) replaced, plus the new photos
 of boxes_v2 (never-boxed regional photos, the unboxed perennial genera, scene-ranked ToL photos); then boxes
 failing the check dropped, and photos left with no box dropped (they stay in the unboxed whole-frame stream).
+The dropped boxes on photos that keep others go to --ignore-out, so a trainer can ignore them instead of
+reading them as background (D-046b).
   python -m transferner.data.box_check [--max-rank 10]          # scores are cached in artifacts/box_check/"""
 from __future__ import annotations
 
@@ -144,6 +146,8 @@ def main() -> None:
     ap.add_argument("--rebox", default="manifests/boxes_v2_rebox.parquet")
     ap.add_argument("--extra", default="manifests/boxes_v2.parquet")
     ap.add_argument("--out", default="manifests/boxes_v3.parquet")
+    ap.add_argument("--ignore-out", default="manifests/boxes_v3_ignore.parquet",
+                    help="the rejected boxes on photos that keep others: ignore regions for the trainer (D-046b)")
     ap.add_argument("--cache", default="artifacts/box_check/scores.parquet")
     ap.add_argument("--emb", default="artifacts/img_emb_v2")
     ap.add_argument("--probe", default="artifacts/probe_v2.pt")
@@ -185,6 +189,9 @@ def main() -> None:
     print("kept by source: " + ", ".join(f"{k} {v:.0%}" for k, v in bx[real].groupby("src").check_ok.mean().items()), flush=True)
     out = bx[bx.check_ok]
     lost = set(bx.uuid) - set(out.uuid)
+    rej = bx[real & ~bx.check_ok & bx.uuid.isin(set(out.uuid))]
+    rej[["uuid", "split", "genus", "prompt", "x0", "y0", "x1", "y1", "crop_rank", "photo_rank"]].to_parquet(root / args.ignore_out, index=False)
+    print(f"wrote {args.ignore_out}: {len(rej):,} rejected boxes on {rej.uuid.nunique():,} photos that keep other boxes", flush=True)
     out = out.drop(columns=["check_ok"])
     out.to_parquet(root / args.out, index=False)
     print(f"wrote {args.out}: {len(out):,} boxes on {out.uuid.nunique():,} photos ({len(lost):,} photos lost every box); "

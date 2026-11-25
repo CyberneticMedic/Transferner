@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.cyberneticmedic.transferner.data.Servers
 import io.github.cyberneticmedic.transferner.R
 import io.github.cyberneticmedic.transferner.core.Runtime
 import io.github.cyberneticmedic.transferner.core.Tier
@@ -130,7 +131,9 @@ fun SettingsScreen(vm: AppViewModel) {
             SectionLabel("Bundle", Modifier.padding(top = 6.dp))
             Card {
                 Text("Version ${files?.manifest?.version ?: "none"} · variant ${files?.variant ?: "-"} · verified", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text("Server: ${vm.prefs.server}", fontSize = 13.sp, color = C.muted)
+                val inUse by vm.serverInUse.collectAsState()
+                Text(inUse?.let { "Server: $it (${Servers.label(it)})" } ?: "Server: ${vm.prefs.server}", fontSize = 13.sp, color = C.muted)
+                if (Servers.tailnet.isNotEmpty()) Text("Away from home it uses the tailnet when Tailscale is on.", fontSize = 12.sp, color = C.muted)
                 OutlinedButton(onClick = { vm.go(Screen.SETUP) }, shape = RoundedCornerShape(10.dp)) { Text("Check for a new bundle", color = C.green) }
             }
 

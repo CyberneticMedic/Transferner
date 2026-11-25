@@ -1,7 +1,14 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+// Machine-local settings (gitignored): transferner.tailnet = the bundle server's tailnet addresses, comma-separated
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 
 android {
@@ -14,9 +21,10 @@ android {
         applicationId = "io.github.cyberneticmedic.transferner"
         minSdk = 29
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.7"
+        versionCode = 12
+        versionName = "0.7.1"
         ndk { abiFilters += listOf("arm64-v8a") }        // Pixel 7-9 (D-003); keeps the APK small
+        buildConfigField("String", "TAILNET_SERVERS", "\"${localProps.getProperty("transferner.tailnet", "")}\"")
     }
     // Every sideloaded APK must carry the same signature, or Android refuses to update the installed app
     // (and its data) in place. The key is a copy of the debug keystore kept outside ~/.android.
@@ -38,7 +46,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     packaging { jniLibs { useLegacyPackaging = false } }
     testOptions { unitTests.isReturnDefaultValues = true }
 }

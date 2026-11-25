@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.cyberneticmedic.transferner.data.Servers
 import io.github.cyberneticmedic.transferner.R
 
 @Composable
@@ -63,10 +64,12 @@ fun SetupScreen(vm: AppViewModel) {
             }
             OutlinedTextField(
                 value = server, onValueChange = { server = it }, singleLine = true, enabled = !downloading,
-                label = { Text("Bundle server (home network)") },
+                label = { Text("Bundle server (home network or tailnet)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth(),
             )
-            Text("Use Wi-Fi. Every file is checked against the bundle's SHA-256 manifest before it is used.", fontSize = 12.5.sp, color = C.muted, lineHeight = 18.sp)
+            Text("Use Wi-Fi. Every file is checked against the bundle's SHA-256 manifest before it is used." +
+                (if (Servers.tailnet.isNotEmpty()) " Away from home the app reaches the server over Tailscale." else ""),
+                fontSize = 12.5.sp, color = C.muted, lineHeight = 18.sp)
             device?.let { Text("This phone: ${it.label}", fontSize = 12.5.sp, color = C.ink2, lineHeight = 18.sp) }
             Text(
                 plan?.let { "Species model for this phone: ${variantName(it.speciesVariant)} on the ${it.speciesRuntime.name} (${it.reason})." }

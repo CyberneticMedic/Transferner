@@ -32,6 +32,7 @@ import io.github.cyberneticmedic.transferner.data.DeviceProfile
 import io.github.cyberneticmedic.transferner.data.LogEntry
 import io.github.cyberneticmedic.transferner.data.ObservationLog
 import io.github.cyberneticmedic.transferner.data.Prefs
+import io.github.cyberneticmedic.transferner.data.Servers
 import io.github.cyberneticmedic.transferner.data.Progress
 import io.github.cyberneticmedic.transferner.ml.AccelChoice
 import io.github.cyberneticmedic.transferner.ml.LiveDetector
@@ -206,6 +207,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The bundle server in use this session: the home network or the tailnet (Servers), null until one answered. */
+    val serverInUse = MutableStateFlow<String?>(null)
+
+    /** Blocking: a reachable bundle server, [prefer] first, then the home network, then the tailnet. */
+    private fun reachable(prefer: String = prefs.server): String {
+        val tried = Servers.candidates(prefer)
+        val s = Servers.firstReachable(tried)
+            ?: throw java.io.IOException("no bundle server answered (tried ${tried.joinToString()}); away from home, turn on Tailscale")
+        serverInUse.value = s
+        return s
+    }
+
     /** App (app.json) and model bundle (latest.json) updates on the home server. Silent: no message when offline. */
     fun checkUpdates(silent: Boolean = false) {
         if (appUpdate.value is UpdateState.Checking || appUpdate.value is UpdateState.Downloading) return
@@ -213,7 +226,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val (rel, latest) = withContext(Dispatchers.IO) {
-                    updater.check(prefs.server) to runCatching { repo.remoteLatest(prefs.server) }.getOrNull()
+                    val s = reachable()
+                    updater.check(s) to runCatching { repo.remoteLatest(s) }.getOrNull()
                 }
                 val installed = repo.installed()?.first
                 val remote = latest?.version
@@ -235,7 +249,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val apk = withContext(Dispatchers.IO) {
-                    updater.download(prefs.server, rel) { d, t -> appUpdate.value = UpdateState.Downloading(rel, d, t) }
+                    updater.download(serverInUse.value ?: reachable(), rel) { d, t -> appUpdate.value = UpdateState.Downloading(rel, d, t) }
                 }
                 appUpdate.value = UpdateState.Ready(rel, apk)
             } catch (e: Exception) {
@@ -338,7 +352,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    repo.download(server, { models -> planFor(models).speciesVariant }, updater.currentVersionCode) {
+                    repo.download(reachable(server), { models -> planFor(models).speciesVariant }, updater.currentVersionCode) {
                         bundle.value = BundleState.Downloading(it)
                     }
                 }
@@ -886,10 +900,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val report = deviceReport()
-                val n = withContext(Dispatchers.IO) {
-                    log.upload(prefs.server, deviceId(), report, recorder.uploadable()) { i, total -> busy.value = "Sending files $i / $total…" }
+                val (n, s) = withContext(Dispatchers.IO) {
+                    val s = reachable()
+                    log.upload(s, deviceId(), report, recorder.uploadable()) { i, total -> busy.value = "Sending files $i / $total…" } to s
                 }
-                message.value = "Sent $n new files and the log to ${prefs.server}"
+                message.value = "Sent $n new files and the log to $s (${Servers.label(s)})"
             } catch (e: Exception) {
                 message.value = "Could not send the log: ${e.message}"
             } finally {

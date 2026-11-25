@@ -85,5 +85,15 @@ not in git. The tests skip when the goldens are absent.
 
 ## Install on the phone
 1. Run `bash scripts/serve_bundle.sh`. It serves `$TRANSFERNER_DATA/bundle/` on port 8765.
-2. On the phone, open `http://<server>:8765/` and install `transferner-0.2.apk`.
+2. On the phone, open `http://<server>:8765/` and install the APK listed there.
 3. Open the app. It downloads the bundle from the address on its setup screen.
+
+### Away from home: the tailnet (D-047)
+The server listens on every interface, so with Tailscale on the phone the same page and files are at
+`http://<machine>.<tailnet>.ts.net:8765/`. From 0.7.1 the app probes the saved address, the home-network default and
+the tailnet addresses together and uses the first in that order that answers (Settings shows which). The tailnet
+addresses are built in from `app/local.properties`, which is gitignored, so the tailnet name stays out of this
+public repo:
+```
+transferner.tailnet=http://<machine>.<tailnet>.ts.net:8765/,http://<tailscale ip>:8765/
+```

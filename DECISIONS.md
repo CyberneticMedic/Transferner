@@ -458,10 +458,39 @@ Newest at the bottom. Format: ID · date · decision · why.
   - Apps 0.4.3 and 0.6 (worktrees at e5c36b7, 22405a0): both download 0.8, and the detector golden test passes. The 0.4.3 test reads detector.json from the *published* bundle, so it was run with a data folder where bundle and goldens are both 0.8. The only failure is the known trait wording ("Edible as described" against "Fruit edible as described"), as for 0.7.
 - **Published 2026-11-25.** `latest.json` → 0.8, checked over the LAN and the tailnet.
 
-## D-049 D-046b: the box check's rejects as ignore regions (2026-11-25, results pending)
+## D-049 D-046b: the box check's rejects as ignore regions (2026-11-25, results 2026-11-26: not shipped)
 - **Why:** D-046 dropped rejected boxes without replacing them, so on 73,843 photos that keep other boxes, 124,274 rejected boxes counted as background. Most are leaves, but 14% are wildflowers and 6% trees, often a neighbouring plant of another genus, which is exactly the distant plant the user asked for.
 - **Change:**
   - `box_check.py` writes them to `manifests/boxes_v3_ignore.parquet` (boxes_v3 is byte-identical).
   - `train_live_head.py --ignore-boxes` passes them as ignore regions on the real-photo and scene streams: 101,742 boxes on 60,382 train photos. The SSD loss already blocks negatives at IoU ≥ 0.4 or IoA ≥ 0.5 with an ignore region.
   - `BoxSet(ignore=...)` carries them through the same crop as the targets (label 0 marks them; `tests/test_detector_live.py`).
 - **Run:** `mnv4_live_d046b`, the D-046 recipe from `mnv4_live_d044` with only `--ignore-boxes` added, so it compares directly with `mnv4_live_d046`. The first launch died of HIP OOM because a GPU eval was started beside it, and it was restarted alone. That restart was killed at step 16,200 of 50,451 when the Claude Code session that launched it exited. Up to that point its val numbers matched D-046 at the same steps within noise (step 16,000: genus top-1 0.744 vs 0.742, scene AP50 0.537 vs 0.540, OI AP50 0.270 vs 0.259, plant-free box rate 11.3% vs 11.9%). The trainer saves no optimiser state, so it was rerun from the start on 2026-11-26 under `setsid nohup`, which detaches it from the session.
+- **Test fix first:** the real-photo box test scores against boxes_v3, which lacks the rejects. A model no longer taught to call them background would be charged a false alarm for each one it finds.
+  - `--boxes-only --ignore-boxes` now also scores real photos and real scenes with the test split's rejects as ignore regions (2,610 boxes on 8,241 photos; 1,362 in scenes). It uses `oi_eval`'s rule: a detection at least half inside a reject that matches no target is dropped.
+  - Without ignores, that path reproduces the old numbers exactly.
+- **Paired check:** `--dump-dets` saves the detections, and `eval/box_bootstrap.py` runs a paired photo bootstrap of AP50 (2,000 resamples, the same photo weights for both models). Matching is done once per photo and checked against `coco_map`, with a test in `tests/test_detector_live.py`. The interval covers this test set, not run-to-run training noise. No second seed was run.
+- **Results** (test split, d044 genera; A = `mnv4_live_d046` as in bundle 0.8, B = `mnv4_live_d046b`, best step 50,451):
+
+  | | A | B | B − A, 95% interval |
+  |---|---|---|---|
+  | Real-photo boxes AP50, rejects ignored | 0.658 | 0.649 | −0.009 [−0.014, −0.004] |
+  | Same, app's box rules | 0.672 | 0.661 | −0.010 [−0.015, −0.003] |
+  | Same, rejects not ignored | 0.655 | 0.644 | −0.011 [−0.015, −0.005] |
+  | Real scenes AP50, rejects ignored | 0.563 | 0.566 | +0.003 [−0.003, +0.010] |
+  | Real scenes AP50, app rules | 0.547 | 0.547 | −0.000 [−0.009, +0.010] |
+  | Open Images AP50 (1,830 photos) | 0.293 | 0.291 | −0.002 [−0.007, +0.004] |
+  | Genus top-1 / pool / encounter | 80.46 / 82.10 / 83.82% | 80.33 / 82.38 / 84.12% | |
+  | Trait recall / composites / mosaic | 85.27% / 0.954 / 0.551 | 84.91% / 0.955 / 0.517 | |
+  | INT8 genus top-1 (ties) | 79.22% (1.96%) | 79.04% (1.85%) | |
+  | Plant-free frames: raw box / box shown after the float gate | 8.5% / 0.93% | 10.0% / 0.92% | |
+  | INT8 gate (boxes / warning): plant-free frames passing | 1.18% / 2.75% | 1.15% / 2.57% | |
+
+  - The test fix changed little: B trails by the same 0.01 with or without the rejects ignored.
+  - Mosaic AP swings ±0.03 between evals of one run, and its targets also lack the rejects.
+- **Why it lost** (real photos, app's box rules, objectness ≥ 0.5):
+  - B finds more plants: 7,145 → 7,243 hits of 9,608 targets (+1.4%).
+  - It also draws more false boxes: 3,586 → 3,986 (+11%). 2,421 → 2,702 of those lie at least half inside a target box.
+  - The train rejects it stopped calling background are 64% leaves, 7% fruit and 6% tree trunks, all parts of a plant. Only 23% are whole plants: wildflowers, trees, shrubs, vines, grass, ferns, moss.
+  - So it learned to box plant parts, and the extra part boxes cost more precision than the extra plants gained.
+- **Decision:** not shipped. Bundle 0.8 keeps `mnv4_live_d046`. `--ignore-boxes` stays as an opt-in.
+- **If revisited (not run):** ignore only the whole-plant rejects (wildflower, tree, plant, shrub, vine, grass, fern, moss) and keep the part rejects (leaf, fruit, flower, trunk) as background.

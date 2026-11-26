@@ -331,10 +331,11 @@ class OIEval(Dataset):
         return img, torch.from_numpy(tgt * s).float(), torch.from_numpy(ign * s).float(), 0
 
 
-def oi_eval(model, net, items, size, anchors0, dev, mean, std, workers) -> dict:
+def oi_eval(model, net, items, size, anchors0, dev, mean, std, workers, dump: dict | None = None, tag: str = "") -> dict:
     """Class-agnostic box AP on Open Images plant photos: real distant and cluttered plants with human boxes.
     A detection half inside an ignore region (group box, flower box) that matches no target at IoU 0.5 is
-    dropped, so boxing a hedge or a flower is neither a hit nor a false alarm. Also with the app's box rules."""
+    dropped, so boxing a hedge or a flower is neither a hit nor a false alarm. Also with the app's box rules.
+    With dump, its detections and targets go in dump["<tag>_<raw|app>"] for eval/box_bootstrap.py."""
     from torchvision.ops import box_iou
     model.eval()
     rows = {k: {"img": [], "score": [], "box": []} for k in ("raw", "app")}
@@ -367,6 +368,8 @@ def oi_eval(model, net, items, size, anchors0, dev, mean, std, workers) -> dict:
         di, ds, db = np.concatenate(d["img"]), np.concatenate(d["score"]), np.concatenate(d["box"])
         m = coco_map(di, np.zeros(len(di), int), ds, db, gi, np.zeros(len(gi), int), gb)
         out["oi_ap50" if kind == "raw" else "oi_app_ap50"] = m["ap50"]
+        if dump is not None:
+            dump[f"{tag}_{kind}"] = dict(img=di, score=ds, box=db, gt_img=gi, gt_box=gb)
     return out
 
 
@@ -613,6 +616,26 @@ def eval_only(root, args, init, genera, family_of, splits, size, gi, dev) -> Non
                            anchors0, size, family_of, dev, mean, std, False, amp, app)
             print(f"boxes-only {args.eval_only} @ {size} test {tag} n {len(items):,} agnostic_ap50 {det['agnostic_ap50']:.4f} "
                   f"agnostic_map {det['agnostic_map']:.4f} ap50 {det['ap50']:.4f}", flush=True)
+        if args.ignore_boxes:
+            # D-049: the box check's rejects as ignore regions at test time too (oi_eval's rule: a detection at least
+            # half inside one that matches no target at IoU 0.5 is dropped). Without them a model that is no longer
+            # taught to call those plants background is charged a false alarm for each one it finds.
+            ib = pd.read_parquet(root / args.ignore_boxes, columns=["uuid", "x0", "y0", "x1", "y1"]).merge(
+                pd.read_parquet(root / "manifests/images.parquet", columns=["uuid", "path"]), on="uuid")
+            ign = {p: d[["x0", "y0", "x1", "y1"]].to_numpy(np.float32) for p, d in ib.groupby("path", sort=False)}
+            none = np.zeros((0, 4), np.float32)
+            sc = {it[0] for it in scene_slice(root, splits["test"], "test")}
+            dets = {}
+            for tag, items in (("real_boxes", real), ("scene", [it for it in real if it[0] in sc])):
+                n_ig = sum(len(ign.get(it[0], none)) for it in items)
+                for mode, use in (("no ignore", False), ("ignore", True)):
+                    oi = [(p, frac, ign.get(p, none) if use else none, False) for p, frac, _ in items]
+                    r = oi_eval(model, net, oi, size, anchors0, dev, mean, std, w, dets, f"{tag}_{mode.replace(' ', '_')}")
+                    print(f"boxes-only {args.eval_only} @ {size} test {tag} {mode} n {len(items):,} ignore boxes "
+                          f"{n_ig if use else 0:,} agnostic_ap50 {r['oi_ap50']:.4f} app_rules {r['oi_app_ap50']:.4f}", flush=True)
+            if args.dump_dets:
+                np.savez_compressed(root / args.dump_dets, **{f"{k}__{f}": v for k, d in dets.items() for f, v in d.items()})
+                print(f"boxes-only detections -> {args.dump_dets} ({', '.join(dets)})", flush=True)
         return
     for split in ("val", "test"):
         m = image_eval(model, net, splits[split], size, family_of, dev, mean, std, w)
@@ -702,6 +725,8 @@ def main() -> None:
     ap.add_argument("--encounter-exempt-traits", action="store_true", help="genera with cited trait rows keep at least their balanced share")
     ap.add_argument("--eval-only", default="", help="checkpoint: val + test metrics at --size, no training, no table row")
     ap.add_argument("--boxes-only", action="store_true", help="with --eval-only: test box AP on all photos and on real-box photos")
+    ap.add_argument("--dump-dets", default="", help="with --boxes-only and --ignore-boxes: save the real-photo and scene "
+                    "detections (npz under the data root) for python -m transferner.eval.box_bootstrap")
     ap.add_argument("--emb", default="artifacts/img_emb", help="BioCLIP embedding set for the unboxed stream and teacher (D-045: img_emb_v2)")
     ap.add_argument("--probe", default="artifacts/probe.pt", help="teacher probe")
     ap.add_argument("--temperature", default="artifacts/temperature.txt")

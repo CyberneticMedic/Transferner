@@ -1,5 +1,6 @@
 """Live detector data and export pieces on synthetic inputs (run: python tests/test_detector_live.py; CPU, no data):
-the ignore boxes BoxSet carries through its crop (D-046b) and the app graph's logit shift (D-048)."""
+the ignore boxes BoxSet carries through its crop (D-046b), the app graph's logit shift (D-048) and the box
+bootstrap's weighted AP50 (D-049)."""
 import tempfile
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from transferner.eval.box_bootstrap import ap50, match50
+from transferner.eval.metrics import coco_map
 from transferner.export.detector_app import AppExport
 from transferner.train.train_detector import BoxSet, build
 from transferner.utils.config import load
@@ -61,7 +64,31 @@ def test_logit_shift_keeps_the_app_softmax():
     assert torch.equal(m.head.image_cls[-1].bias, bias0)                     # the trained model is not changed
 
 
+def test_box_bootstrap_ap50_matches_coco_map():
+    r = np.random.default_rng(1)
+    n_img = 60
+    gi = np.repeat(np.arange(n_img), r.integers(1, 4, n_img))
+    xy = r.uniform(0, 300, (len(gi), 2))
+    gb = np.c_[xy, xy + r.uniform(20, 120, (len(gi), 2))]
+    di = np.r_[gi, r.integers(0, n_img, 150)]                                 # a jittered copy of each target + clutter
+    jit = gb + r.normal(0, 15, gb.shape)
+    xy2 = r.uniform(0, 300, (150, 2))
+    db = np.r_[jit, np.c_[xy2, xy2 + r.uniform(10, 80, (150, 2))]]
+    ds = r.uniform(0, 1, len(di))
+    d = dict(img=di, score=ds, box=db, gt_img=gi, gt_box=gb)
+    tp, ioa = match50(d)
+    srt = np.argsort(-ds, kind="stable")
+    ref = coco_map(di, np.zeros(len(di), int), ds, db, gi, np.zeros(len(gi), int), gb)["ap50"]
+    assert abs(ap50(di[srt], tp[srt], gi, np.ones(n_img)) - ref) < 1e-9
+    assert 0 < tp.sum() < len(gi) + 1 and ((ioa >= 0) & (ioa <= 1)).all()
+    w = np.zeros(n_img); w[:30] = 1                                           # weights 0/1 = the AP of a photo subset
+    keep = di < 30
+    sub = coco_map(di[keep], np.zeros(keep.sum(), int), ds[keep], db[keep], gi[gi < 30], np.zeros((gi < 30).sum(), int), gb[gi < 30])
+    assert abs(ap50(di[srt], tp[srt], gi, w) - sub["ap50"]) < 1e-9
+
+
 if __name__ == "__main__":
     test_boxset_ignore_boxes_follow_the_targets()
     test_logit_shift_keeps_the_app_softmax()
+    test_box_bootstrap_ap50_matches_coco_map()
     print("ok")

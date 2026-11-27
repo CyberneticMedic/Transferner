@@ -41,12 +41,11 @@ import io.github.cyberneticmedic.transferner.ml.AccelChoice
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val models by vm.models.collectAsState()
-    val bundle by vm.bundle.collectAsState()
     val live by vm.live.collectAsState()
     val device by vm.device.collectAsState()
     val plan by vm.plan.collectAsState()
     val last by vm.result.collectAsState()
-    val files = (bundle as? BundleState.Ready)?.files
+    val files = vm.inUse.collectAsState().value           // the models in use, also during a download
     var detAcc by remember { mutableStateOf(vm.prefs.detectorAccel) }
     var boxes by remember { mutableStateOf(vm.prefs.showBoxes) }
     var timings by remember { mutableStateOf(vm.prefs.showTimings) }
@@ -183,7 +182,7 @@ private fun UpdatesCard(vm: AppViewModel) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     SectionLabel("Updates")
     Card {
-        Text("App ${vm.updater.currentVersionName} · models ${(vm.bundle.collectAsState().value as? BundleState.Ready)?.files?.manifest?.version ?: "none"}",
+        Text("App ${vm.updater.currentVersionName} · models ${vm.inUse.collectAsState().value?.manifest?.version ?: "none"}",
             fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         when (val u = upd) {
             is UpdateState.Idle -> Text("Not checked yet.", fontSize = 13.sp, color = C.muted)

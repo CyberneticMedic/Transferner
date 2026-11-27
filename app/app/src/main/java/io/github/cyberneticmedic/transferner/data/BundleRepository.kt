@@ -55,6 +55,8 @@ class BundleRepository(private val root: File, private val appVersion: Long = Lo
         val dir = File(root, v)
         val mf = File(dir, "manifest.json").takeIf { it.exists() } ?: return null
         val manifest = BundleJson.decodeFromString<Manifest>(mf.readText())
+        // not while a download (from this or an earlier screen of the app) is moving files between the directories
+        if (LOCK.tryLock()) try { repairInstalled(dir, manifest, variant) } finally { LOCK.unlock() }
         // files every app needs must be complete; "app:<N>" files are extras (an app updated after the bundle
         // was downloaded lacks them until missingExtras() offers the same bundle again)
         if (manifest.files.filter { it.wantedFor(variant, 0) }.any { File(dir, it.path).length() != it.bytes }) return null
@@ -101,10 +103,43 @@ class BundleRepository(private val root: File, private val appVersion: Long = Lo
     }
 
     /**
+     * Any file the installed manifest lists but [dir] lacks is taken from another version directory under the root
+     * when its size and SHA-256 match the installed manifest. That is where an interrupted update leaves them:
+     * download() moves unchanged files into the new version's directory before fetching the rest, and a killed app
+     * never moves them back. In 0.7.1 and earlier the installed bundle then stopped loading (Setup, no models on the
+     * phone) until the update was retried and finished. Returns how many files were moved back.
+     */
+    fun repairInstalled(dir: File, manifest: Manifest, variant: String): Int {
+        val lacking = manifest.files.filter { it.wantedFor(variant, appVersion) && File(dir, it.path).length() != it.bytes }
+        if (lacking.isEmpty()) return 0
+        val others = root.listFiles()?.filter { it.isDirectory && it != dir }.orEmpty()
+        var n = 0
+        for (f in lacking) {
+            val src = others.map { File(it, f.path) }.firstOrNull { it.length() == f.bytes && sha256(it) == f.sha256 } ?: continue
+            val dst = File(dir, f.path)
+            dst.parentFile?.mkdirs()
+            if (dst.exists()) dst.delete()
+            if (src.renameTo(dst)) n++
+        }
+        return n
+    }
+
+    /**
      * Blocking; call off the main thread. [choose] picks the variant from the server's species.json (or
      * returns a fixed one). Fails early, before any large file, when the phone lacks the storage.
      */
     fun download(server: String, choose: (SpeciesModels) -> String, appVersion: Long = this.appVersion, onProgress: (Progress) -> Unit): Pair<String, String> {
+        // one download at a time in the whole process (an earlier screen's download can outlive its ViewModel),
+        // and never beside load()'s repair
+        if (!LOCK.tryLock(30, java.util.concurrent.TimeUnit.SECONDS)) throw IOException("a model download is already running; wait for it to finish")
+        try {
+            return downloadLocked(server, choose, appVersion, onProgress)
+        } finally {
+            LOCK.unlock()
+        }
+    }
+
+    private fun downloadLocked(server: String, choose: (SpeciesModels) -> String, appVersion: Long, onProgress: (Progress) -> Unit): Pair<String, String> {
         val base = if (server.endsWith("/")) server else "$server/"
         val latest = BundleJson.decodeFromString<Latest>(text(base + "latest.json"))
         if (latest.minApp > appVersion)
@@ -124,8 +159,11 @@ class BundleRepository(private val root: File, private val appVersion: Long = Lo
         var done = 0L
         val buf = ByteArray(1 shl 16)
         // a new bundle version: move unchanged files (same path, size and hash) over from the installed version
-        // instead of downloading them again (the species model alone is 0.3 to 0.6 GB)
-        installed()?.first?.takeIf { it != manifest.version }?.let { prev ->
+        // instead of downloading them again (the species model alone is 0.3 to 0.6 GB). If this download fails
+        // they are moved back (below); if the app is killed, load() moves them back (repairInstalled).
+        val moved = mutableListOf<Pair<File, File>>()
+        val prevVersion = installed()?.first
+        prevVersion?.takeIf { it != manifest.version }?.let { prev ->
             val old = BundleJson.decodeFromString<Manifest>(File(root, "$prev/manifest.json").takeIf { it.exists() }?.readText() ?: return@let)
             val oldHash = old.files.associate { it.path to it.sha256 }
             for (f in wanted) {
@@ -133,33 +171,40 @@ class BundleRepository(private val root: File, private val appVersion: Long = Lo
                 val dst = File(dir, f.path)
                 if (!dst.exists() && oldHash[f.path] == f.sha256 && src.length() == f.bytes) {
                     dst.parentFile?.mkdirs()
-                    src.renameTo(dst)
+                    if (src.renameTo(dst)) moved += src to dst
                 }
             }
         }
-        for (f in wanted) {
-            val dst = File(dir, f.path)
-            if (dst.length() == f.bytes && sha256(dst) == f.sha256) { done += f.bytes; onProgress(Progress(done, total, f.path, variant)); continue }
-            dst.parentFile?.mkdirs()
-            val part = File(dst.path + ".part")
-            val md = MessageDigest.getInstance("SHA-256")
-            get(vbase + f.path).inputStream.use { inp ->
-                part.outputStream().use { out ->
-                    var last = 0L
-                    while (true) {
-                        val n = inp.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n); md.update(buf, 0, n); done += n
-                        if (done - last > (1 shl 20)) { onProgress(Progress(done, total, f.path, variant)); last = done }
+        try {
+            for (f in wanted) {
+                val dst = File(dir, f.path)
+                if (dst.length() == f.bytes && sha256(dst) == f.sha256) { done += f.bytes; onProgress(Progress(done, total, f.path, variant)); continue }
+                dst.parentFile?.mkdirs()
+                val part = File(dst.path + ".part")
+                val md = MessageDigest.getInstance("SHA-256")
+                get(vbase + f.path).inputStream.use { inp ->
+                    part.outputStream().use { out ->
+                        var last = 0L
+                        while (true) {
+                            val n = inp.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n); md.update(buf, 0, n); done += n
+                            if (done - last > (1 shl 20)) { onProgress(Progress(done, total, f.path, variant)); last = done }
+                        }
                     }
                 }
+                val got = md.digest().joinToString("") { "%02x".format(it) }
+                if (got != f.sha256) { part.delete(); throw IOException("checksum mismatch for ${f.path}") }
+                if (!part.renameTo(dst)) throw IOException("could not move ${f.path} into place")
+                onProgress(Progress(done, total, f.path, variant))
             }
-            val got = md.digest().joinToString("") { "%02x".format(it) }
-            if (got != f.sha256) { part.delete(); throw IOException("checksum mismatch for ${f.path}") }
-            if (!part.renameTo(dst)) throw IOException("could not move ${f.path} into place")
-            onProgress(Progress(done, total, f.path, variant))
+            File(dir, "manifest.json").writeText(manifestText)
+        } catch (e: Throwable) {
+            // the installed bundle (still named by current.txt) gets its files back, so it keeps working
+            if (installed()?.first == prevVersion)
+                for ((src, dst) in moved) if (!src.exists() && dst.exists()) { src.parentFile?.mkdirs(); dst.renameTo(src) }
+            throw e
         }
-        File(dir, "manifest.json").writeText(manifestText)
         // other variants' model files are not needed on this phone
         manifest.files.filter { !it.wantedFor(variant, appVersion) }.forEach { File(dir, it.path).delete() }
         current.writeText("${manifest.version} $variant")
@@ -177,6 +222,9 @@ class BundleRepository(private val root: File, private val appVersion: Long = Lo
     }
 
     companion object {
+        /** Serialises download() and load()'s repair across every repository instance in the process. */
+        private val LOCK = java.util.concurrent.locks.ReentrantLock()
+
         /** Sidecar of the detector with region outputs (bundle.py --detector-regions). */
         const val REGIONS_META = "detector_rg.json"
         const val REGIONS_MODEL = "detector_rg.tflite"

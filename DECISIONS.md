@@ -494,3 +494,29 @@ Newest at the bottom. Format: ID · date · decision · why.
   - So it learned to box plant parts, and the extra part boxes cost more precision than the extra plants gained.
 - **Decision:** not shipped. Bundle 0.8 keeps `mnv4_live_d046`. `--ignore-boxes` stays as an opt-in.
 - **If revisited (not run):** ignore only the whole-plant rejects (wildflower, tree, plant, shrub, vine, grass, fern, moss) and keep the part rejects (leaf, fruit, flower, trunk) as background.
+
+## D-050 App 0.7.2: Save to log works during model downloads, Send no longer crashes (2026-11-26)
+- **Report:** "The logging photo function is broken". Asked what happens: "I hit save to log and nothing happens."
+- **Evidence:** the server's last log upload was on 2026-11-24 02:08, from app 0.4.1; nothing has been posted since. Tonight (21:02-21:18) a phone on the tailnet downloaded the whole 0.8 bundle in four runs: the first two stopped at 21:05 and 21:13, the third finished at 21:16, and a fourth started at 21:18.
+- **Causes** (found by a code sweep with independent verification; the second is confirmed in the 0.7.1 APK's bytecode):
+  - **Save to log:** `saveResult` returned with no message whenever the bundle state was not Ready, which is the case for the whole of a model download and after a failed one. The loaded models kept working, so the camera and the result screen did too. The log list and thumbnails had the same check. During a download the live presence gate also fell to 0, so boxes showed on everything, and focus chips disappeared. Present since 0.1/0.3; in-app model updates (0.5) made it easy to reach.
+  - **Send:** `deviceReport()`'s local `put(k, Any?)` inside `buildJsonObject` bound its own `put(k, JsonPrimitive(..))` calls to itself. The string re-quoted and doubled until OutOfMemoryError, so every Send closed the app before any request (since 0.6, 22405a0).
+  - **Species retry:** a load retried on the same variant with fewer threads completed `speciesLoaded` with false first, so a retry that loaded fine still failed every identification until restart (since 0.2).
+  - **Interrupted updates:** an update to a new version moves the installed version's unchanged files into the new directory before fetching the rest. If it was interrupted, the installed bundle stopped loading (Setup, no models on the phone) until the update was retried and finished.
+- **Changes** (`AppViewModel`, `BundleRepository`, `core/Report.kt`, Settings, Live and Forage screens):
+  - `inUse` is the bundle the loaded models came from (set by `loadModels`). Save, the log, thumbnails, the device report, focus, the live gate and the forage screen read it instead of the download state. A result records the bundle of the model that produced it (`identifierFiles`, set on the species thread), and that bundle's versions go in the log row.
+  - Save reports failure ("Could not save to the log: ...") and ignores a second tap while saving.
+  - The device report is written by `Report.json`.
+  - The species retry completes `speciesLoaded` only once, with the retry's result.
+  - A finished download goes to the camera only from Setup; elsewhere it says "New models installed". A failed download keeps the installed bundle Ready when it still loads ("Model download failed (...). Still using models 0.8.").
+  - Settings model actions (re-plan, variant, threads, runtime) say why they wait while a download runs. Settings shows the models in use.
+  - `BundleRepository`:
+    - A failed download moves the files back.
+    - `load()` repairs a bundle whose update was killed: a file the installed manifest lacks is taken from another version directory when its size and SHA-256 match.
+    - One lock across the process serialises downloads and that repair. An earlier screen's download can outlive its ViewModel.
+  - Thumbnails also look in the directory being downloaded.
+- **Checks:**
+  - Unit tests: 58 pass, 2 opt-in skipped. New: `ReportTest`, `ObservationLogTest` (add, entries, header migration and upload against a local server with the bundle server's rules), and `BundleRepairTest` (move-back after a failed update, repair after a killed one, and a same-size changed file never taken).
+  - `DownloadTest` against the local bundle server passes.
+  - Two adversarial review rounds; their confirmed findings are fixed. Left as known, rare and pre-existing: a species-retry token race across a concurrent `loadModels`, and capture rules swapped mid-identification by a finished download.
+- **Not changed:** downloads still run inside the app, not in a background service. Closing the app can interrupt one (it is resumed from Setup, keeping the files already fetched). That is what happened at 21:05 and 21:13.

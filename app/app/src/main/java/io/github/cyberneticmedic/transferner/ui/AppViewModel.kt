@@ -101,6 +101,8 @@ data class IdResult(
     val liveRing: String = "[]",
     /** Reopened from the log: the caution flag saved with it (its banner may have come from outside the top 5). */
     val storedCaution: Boolean = false,
+    /** The bundle whose models produced this result: its versions go in the log row. */
+    val source: BundleFiles? = null,
 )
 
 /** A walk alert (D-044): the live model's forage score crossed its threshold and BioCLIP was asked to confirm. */
@@ -142,10 +144,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var env: Environment? = null
     @Volatile private var detector: LiveDetector? = null
     private var identifier: SpeciesIdentifier? = null
+    /** The bundle [identifier] was built from; both are set and read only on the species thread. */
+    private var identifierFiles: BundleFiles? = null
     private var speciesLoaded = CompletableDeferred<Boolean>()
 
     val screen = MutableStateFlow(Screen.SETUP)
     val bundle = MutableStateFlow<BundleState>(BundleState.Missing)
+    /**
+     * The bundle the loaded models came from (set by loadModels). Unlike [bundle], which is Downloading or Failed
+     * while a new bundle is fetched, this stays put, so capture, Save to log, the log, thumbnails, the presence gate
+     * and focus keep working on the models in use. 0.7.1 and earlier read [bundle] there, so Save to log did nothing,
+     * with no message, during and after an in-app model download.
+     */
+    val inUse = MutableStateFlow<BundleFiles?>(null)
     val models = MutableStateFlow(ModelStatus())
     val live = MutableStateFlow<LiveFrame?>(null)
     val busy = MutableStateFlow<String?>(null)
@@ -192,7 +203,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             device.value = withContext(Dispatchers.Default) { DeviceProfile.read(app, runCatching { environment() }.getOrNull()) }
             val files = withContext(Dispatchers.IO) { runCatching { repo.load() }.getOrNull() }
             recoverFromCrash(files)
-            if (files != null) {
+            if (files != null && bundle.value is BundleState.Missing) {      // not if Setup started a download meanwhile
                 bundle.value = BundleState.Ready(files)
                 val p = plan.value
                 if (p != null && p.speciesVariant != files.variant) {
@@ -320,9 +331,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Model changes in Settings need the installed bundle. While a download runs (it moves files out of the
+     * installed directory) they wait, with [busyMessage] shown instead of nothing happening.
+     */
+    private fun readyOrSay(busyMessage: String = "A model download is running; try again when it has finished."): BundleFiles? =
+        (bundle.value as? BundleState.Ready)?.files ?: null.also { message.value = busyMessage }
+
     /** Re-profile the phone and re-plan (Settings). Clears the detector benchmark so it runs again. */
     fun replan() {
-        val files = (bundle.value as? BundleState.Ready)?.files ?: return
+        val files = readyOrSay() ?: return
         val d = DeviceProfile.read(getApplication(), runCatching { environment() }.getOrNull())
         device.value = d
         val p = DevicePlanner.plan(d, files.speciesModels.variants)
@@ -333,7 +351,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Settings: use a specific variant (download it if it is not on the phone). */
     fun chooseVariant(id: String, runtime: Runtime) {
-        val files = (bundle.value as? BundleState.Ready)?.files ?: return
+        val files = readyOrSay() ?: return
         val p = (plan.value ?: DevicePlanner.plan(device.value ?: return, files.speciesModels.variants))
             .copy(speciesVariant = id, speciesRuntime = runtime, reason = "chosen in Settings")
         setPlan(p)
@@ -360,11 +378,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 bundle.value = BundleState.Ready(files)
                 neededVariant.value = null
                 bundleUpdate.value = null
-                history.clear()
-                screen.value = Screen.LIVE
+                // from Setup, go live; if the user went back to the camera or a result meanwhile, stay there
+                if (screen.value == Screen.SETUP) { history.clear(); screen.value = Screen.LIVE }
+                else message.value = "New models installed (${files.manifest.version})."
                 loadModels(files)
             } catch (e: Exception) {
-                bundle.value = BundleState.Failed(e.message ?: e.toString())
+                // the installed bundle is untouched by a failed update (BundleRepository moves its files back), so
+                // keep it Ready: Settings and reloads stay usable. Only a phone with no working bundle shows Failed.
+                val back = withContext(Dispatchers.IO) { runCatching { repo.load() }.getOrNull() }
+                if (back != null) {                                    // Setup shows the reason in the message
+                    bundle.value = BundleState.Ready(back)
+                    message.value = "Model download failed (${e.message ?: e}). Still using models ${back.manifest.version}."
+                    if (inUse.value == null) {                         // Download was tapped before startup loaded them
+                        if (screen.value == Screen.SETUP && neededVariant.value == null) { history.clear(); screen.value = Screen.LIVE }
+                        loadModels(back)
+                    }
+                } else bundle.value = BundleState.Failed(e.message ?: e.toString())
             }
         }
     }
@@ -382,7 +411,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Forage tiers from the bundle and the user's overrides; rebuilt when the user edits them. */
-    fun rebuildForage(files: BundleFiles? = (bundle.value as? BundleState.Ready)?.files) {
+    fun rebuildForage(files: BundleFiles? = inUse.value) {
         val f = files ?: return
         scorer = f.forage?.let { ForageScorer(it, f.detector.genera.size, prefs.forageTiers, f.tuning.alertWeightFloor) }
         accumulator = AlertAccumulator(f.tuning)
@@ -397,6 +426,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun resetForageTiers() { prefs.forageTiers = emptyMap(); rebuildForage() }
 
     fun loadModels(files: BundleFiles) {
+        inUse.value = files
         val p = plan.value ?: DevicePlanner.plan(device.value ?: DeviceProfile.read(getApplication(), null), files.speciesModels.variants).also { setPlan(it) }
         // capture rules belong to this bundle and must not wait for (or depend on) the live detector
         val idx = io.github.cyberneticmedic.transferner.core.WarningIndex(files.catalog)
@@ -487,7 +517,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadSpecies(files: BundleFiles, p: Plan) {
         try {
-            identifier?.close(); identifier = null
+            identifier?.close(); identifier = null; identifierFiles = null
             val meta = files.species
             val runtime = if (meta.accelerator == "GPU") p.speciesRuntime else Runtime.CPU
             val avail = DeviceProfile.availMb(getApplication())
@@ -506,6 +536,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefs.pendingSpecies = null
             }
             identifier = s
+            identifierFiles = files
             models.update { it.copy(
                 species = "${meta.label} · ${s.accelerator}, ${p.speciesThreads} threads · loaded in ${s.loadMs} ms" + if (s.usedCache) " (weight cache)" else "",
                 speciesReady = true) }
@@ -513,11 +544,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Throwable) {
             val next = DevicePlanner.fallback(p, files.speciesModels.variants)
             models.update { it.copy(species = "failed: ${e.message}", error = e.toString()) }
+            if (next != null && next.speciesVariant == files.variant) {
+                // retry on the same file (fewer threads): the retry completes speciesLoaded. 0.7.1 completed it
+                // with false first, so a retry that loaded fine still failed every identification until restart.
+                setPlan(next)
+                speciesExecutor.execute { loadSpecies(files, next) }
+                return
+            }
             speciesLoaded.complete(false)
             if (next != null) {
                 setPlan(next)
-                if (next.speciesVariant == files.variant) speciesExecutor.execute { loadSpecies(files, next) }
-                else { neededVariant.value = next.speciesVariant; message.value = "Species model failed (${e.message}). Next: ${next.reason}." }
+                neededVariant.value = next.speciesVariant; message.value = "Species model failed (${e.message}). Next: ${next.reason}."
             }
         }
     }
@@ -525,12 +562,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     @Synchronized private fun environment(): Environment = env ?: Environment.create().also { env = it }
 
     fun reloadModels() {
-        (bundle.value as? BundleState.Ready)?.let { loadModels(it.files) }
+        readyOrSay("Saved. It takes effect when the model download has finished.")?.let { loadModels(it) }
     }
 
     fun setFocus(id: String?) {
         focus.value = id
-        val files = (bundle.value as? BundleState.Ready)?.files
+        val files = inUse.value
         val bias = if (id == null) null else files?.focus?.bias(id, files.detector.genera.size)
         detectorExecutor.execute { detector?.let { it.focusBias = bias; it.resetSmoothing() } }
     }
@@ -570,20 +607,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** This phone's profile, plan, runtimes and recent timings, uploaded with the log (D-036/D-038/D-044). */
     private fun deviceReport(): String {
-        val files = (bundle.value as? BundleState.Ready)?.files
+        val files = inUse.value
         val ms = synchronized(liveMs) { liveMs.sorted() }
         val bs = synchronized(liveBest) { liveBest.sorted() }
         val now = SystemClock.elapsedRealtime()
         val fps = synchronized(frameTimes) { frameTimes.count { now - it < 60_000 } / 60f }
-        val o = kotlinx.serialization.json.buildJsonObject {
-            fun put(k: String, v: Any?) {
-                when (v) {
-                    null -> {}
-                    is Number -> put(k, kotlinx.serialization.json.JsonPrimitive(v))
-                    is Boolean -> put(k, kotlinx.serialization.json.JsonPrimitive(v))
-                    else -> put(k, kotlinx.serialization.json.JsonPrimitive(v.toString()))
-                }
-            }
+        val fields = mutableListOf<Pair<String, Any?>>()
+        run {
+            fun put(k: String, v: Any?) { fields += k to v }       // collected, then written by Report.json
             put("app", getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName)
             put("device", device.value?.label ?: "")
             put("gpu_available", device.value?.gpuAvailable)
@@ -610,7 +641,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (hours > 0.05f && startBattery >= 0) put("battery_pct_per_hour", (startBattery - batteryPct()) / hours)
             put("walk_alerts_confirmed", alertsConfirmed); put("walk_alerts_unconfirmed", alertsUnconfirmed)
         }
-        return o.toString()
+        return io.github.cyberneticmedic.transferner.core.Report.json(fields)
     }
 
     /** CameraX analyzer (on detectorExecutor): one RGBA frame -> upright pixels -> detector -> walk logic. */
@@ -619,7 +650,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val d = detector ?: return
             if (screen.value != Screen.LIVE || busy.value != null) return       // CPU goes to the identification
             val now = SystemClock.elapsedRealtime()
-            val files = (bundle.value as? BundleState.Ready)?.files
+            val files = inUse.value
             val tuning = files?.tuning ?: io.github.cyberneticmedic.transferner.core.Tuning()
             var fps = if (walk.value) tuning.walkFps else plan.value?.liveMaxFps ?: 8
             if (thermal() >= android.os.PowerManager.THERMAL_STATUS_SEVERE) fps = minOf(fps, 2)    // hot phone: slow down
@@ -679,7 +710,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun frameJson(r: LiveResult, fs: ForageScorer.Score?, smoothed: Float, totalMs: Float): String {
-        val names = (bundle.value as? BundleState.Ready)?.files?.detector?.genera
+        val names = inUse.value?.detector?.genera
         val top = r.rawPs?.let { ps -> io.github.cyberneticmedic.transferner.core.Detections.topK(ps, 3).joinToString(",") {
             "[\"${names?.get(it) ?: it}\",%.3f]".format(java.util.Locale.US, ps[it]) } } ?: ""
         val warn = r.warnings.joinToString(",") { "\"${it.genus}\"" }
@@ -825,6 +856,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val pixels = IntArray(bmp.width * bmp.height)
                     bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
                     prefs.pendingSpecies = "run"
+                    val src = identifierFiles                      // the bundle of the model that runs now
                     val id = try { identifier!!.identify(pixels, bmp.width, bmp.height) } finally { prefs.pendingSpecies = null }
                     lastIdMs = id.timing.modelMs
                     val shown = scaled(bmp, 1080)
@@ -838,10 +870,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         var a = ru.analyze(fused, text, photos = 2)
                         a = a.copy(caution = io.github.cyberneticmedic.transferner.core.Caution.union(listOf(a.caution, first.analysis.caution, a1.caution)))
                         first.copy(top = a.top, modelMs = first.modelMs + id.timing.modelMs, totalMs = first.totalMs + (System.nanoTime() - t0) / 1e6f,
-                            analysis = a, text = text, secondPhoto = shown, secondJpeg = out.toByteArray(), saved = false)
+                            analysis = a, text = text, secondPhoto = shown, secondJpeg = out.toByteArray(), saved = false,
+                            source = src ?: first.source)
                     } else {
                         IdResult(shown, out.toByteArray(), a1.top, id.timing.modelMs, (System.nanoTime() - t0) / 1e6f,
-                            analysis = a1, text = id.text, liveRing = ringNow)
+                            analysis = a1, text = id.text, liveRing = ringNow, source = src)
                     }
                 }
                 secondFor.value = null
@@ -863,33 +896,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return if (s >= 1f) b else Bitmap.createScaledBitmap(b, (b.width * s).toInt(), (b.height * s).toInt(), true)
     }
 
+    private val saving = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun saveResult(note: String = "") {
         val r = result.value ?: return
-        val files = (bundle.value as? BundleState.Ready)?.files ?: return
+        if (r.saved) return
+        val files = r.source ?: inUse.value
+        if (files == null) { message.value = "Could not save to the log: no models are loaded."; return }
+        if (!saving.compareAndSet(false, true)) return                // a second tap while the first save runs
         viewModelScope.launch(Dispatchers.IO) {
-            val an = r.analysis
-            val caution = an?.caution?.show ?: cautionCandidates(r.top, warnIndex).isNotEmpty()
-            log.add(r.jpeg, r.top, caution, files.manifest.version, files.species.variant, files.detector.model, note,
-                idMs = r.modelMs, text = r.text, level = an?.verdict?.level?.name?.lowercase().orEmpty(), second = r.secondJpeg) { photo ->
-                val v = an?.verdict
-                val json = kotlinx.serialization.json.Json
-                kotlinx.serialization.json.buildJsonObject {
-                    fun s(k: String, x: String) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
-                    fun n(k: String, x: Number?) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
-                    fun b(k: String, x: Boolean) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
-                    s("photo", photo); s("bundle", files.manifest.version); s("species_model", files.species.variant)
-                    s("detector", files.detector.model); n("id_ms", r.modelMs); n("total_ms", r.totalMs); n("photos", an?.photos ?: 1)
-                    put("top", kotlinx.serialization.json.JsonArray(r.top.map { c ->
-                        kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(c.species.name), kotlinx.serialization.json.JsonPrimitive(c.p))) }))
-                    s("level", v?.level?.name?.lowercase().orEmpty()); s("genus", v?.genus.orEmpty()); n("genus_p", v?.genusP)
-                    n("text_score", r.text); b("maybe_outside", v?.maybeOutside ?: false)
-                    b("caution", caution); b("caution_strong", an?.caution?.strong ?: false); n("caution_sum", an?.caution?.sum)
-                    b("second_photo_asked", an?.secondPhoto ?: false); s("note", note)
-                    put("live", runCatching { json.parseToJsonElement(r.liveRing) }.getOrElse { kotlinx.serialization.json.JsonArray(emptyList()) })
-                }.toString()
+            try {
+                val an = r.analysis
+                val caution = an?.caution?.show ?: cautionCandidates(r.top, warnIndex).isNotEmpty()
+                log.add(r.jpeg, r.top, caution, files.manifest.version, files.species.variant, files.detector.model, note,
+                    idMs = r.modelMs, text = r.text, level = an?.verdict?.level?.name?.lowercase().orEmpty(), second = r.secondJpeg) { photo ->
+                    val v = an?.verdict
+                    val json = kotlinx.serialization.json.Json
+                    kotlinx.serialization.json.buildJsonObject {
+                        fun s(k: String, x: String) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
+                        fun n(k: String, x: Number?) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
+                        fun b(k: String, x: Boolean) = put(k, kotlinx.serialization.json.JsonPrimitive(x))
+                        s("photo", photo); s("bundle", files.manifest.version); s("species_model", files.species.variant)
+                        s("detector", files.detector.model); n("id_ms", r.modelMs); n("total_ms", r.totalMs); n("photos", an?.photos ?: 1)
+                        put("top", kotlinx.serialization.json.JsonArray(r.top.map { c ->
+                            kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(c.species.name), kotlinx.serialization.json.JsonPrimitive(c.p))) }))
+                        s("level", v?.level?.name?.lowercase().orEmpty()); s("genus", v?.genus.orEmpty()); n("genus_p", v?.genusP)
+                        n("text_score", r.text); b("maybe_outside", v?.maybeOutside ?: false)
+                        b("caution", caution); b("caution_strong", an?.caution?.strong ?: false); n("caution_sum", an?.caution?.sum)
+                        b("second_photo_asked", an?.secondPhoto ?: false); s("note", note)
+                        put("live", runCatching { json.parseToJsonElement(r.liveRing) }.getOrElse { kotlinx.serialization.json.JsonArray(emptyList()) })
+                    }.toString()
+                }
+                if (result.value === r) result.value = r.copy(saved = true)
+                message.value = "Saved to the log."
+            } catch (e: Exception) {
+                message.value = "Could not save to the log: ${e.message ?: e}"
+            } finally {
+                saving.set(false)
             }
-            result.value = r.copy(saved = true)
-            message.value = "Saved to the log."
         }
     }
 
@@ -924,7 +968,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshLog() {
-        val files = (bundle.value as? BundleState.Ready)?.files ?: return
+        val files = inUse.value ?: return
         viewModelScope.launch(Dispatchers.IO) { entries.value = log.entries(files.catalog) }
     }
 
@@ -941,8 +985,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun thumbFile(s: Species): File? {
-        val files = (bundle.value as? BundleState.Ready)?.files ?: return null
-        return s.thumb?.let { File(files.dir, it.file) }
+        val files = inUse.value ?: return null
+        val rel = s.thumb?.file ?: return null
+        val f = File(files.dir, rel)
+        // during an update to a new version the unchanged thumbnails sit in the directory being downloaded
+        return if (f.exists()) f else files.dir.parentFile?.listFiles()?.map { File(it, rel) }?.firstOrNull { it.exists() } ?: f
     }
 
     override fun onCleared() {

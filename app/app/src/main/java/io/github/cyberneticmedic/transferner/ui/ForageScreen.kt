@@ -38,7 +38,7 @@ import io.github.cyberneticmedic.transferner.core.Tier
  */
 @Composable
 fun ForageScreen(vm: AppViewModel) {
-    val files = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files ?: return
+    val files = vm.inUse.collectAsState().value ?: return
     val forage = files.forage ?: return
     var query by remember { mutableStateOf("") }
     var version by remember { mutableIntStateOf(0) }

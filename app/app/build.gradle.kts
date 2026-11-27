@@ -21,8 +21,8 @@ android {
         applicationId = "io.github.cyberneticmedic.transferner"
         minSdk = 29
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.7.1"
+        versionCode = 13
+        versionName = "0.7.2"
         ndk { abiFilters += listOf("arm64-v8a") }        // Pixel 7-9 (D-003); keeps the APK small
         buildConfigField("String", "TAILNET_SERVERS", "\"${localProps.getProperty("transferner.tailnet", "")}\"")
     }

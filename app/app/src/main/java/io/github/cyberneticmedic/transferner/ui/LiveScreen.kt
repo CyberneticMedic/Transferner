@@ -345,7 +345,7 @@ fun LiveScreen(vm: AppViewModel) {
                     .navigationBarsPadding().padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                val focusMeta = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files?.focus
+                val focusMeta = vm.inUse.collectAsState().value?.focus
                 val focus by vm.focus.collectAsState()
                 if (focusMeta != null && !walk) {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -366,7 +366,7 @@ fun LiveScreen(vm: AppViewModel) {
                             color = C.caution, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 17.sp)
                     }
                 }
-                val files = (vm.bundle.collectAsState().value as? BundleState.Ready)?.files
+                val files = vm.inUse.collectAsState().value
                 val top = f?.result?.genera?.firstOrNull()
                 // plant-presence gate (D-044): below it the frame does not look like any known plant
                 val plant = f == null || f.result.presence >= (files?.tuning?.presenceBoxes ?: 0f)

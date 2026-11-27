@@ -520,3 +520,4 @@ Newest at the bottom. Format: ID · date · decision · why.
   - `DownloadTest` against the local bundle server passes.
   - Two adversarial review rounds; their confirmed findings are fixed. Left as known, rare and pre-existing: a species-retry token race across a concurrent `loadModels`, and capture rules swapped mid-identification by a finished download.
 - **Not changed:** downloads still run inside the app, not in a background service. Closing the app can interrupt one (it is resumed from Setup, keeping the files already fetched). That is what happened at 21:05 and 21:13.
+- **Published 2026-11-26 22:29** on the bundle server (app.json → 0.7.2, versionCode 13, sha256 34c4d062…). Checked over the LAN and the tailnet. 0.7.1 is offered the update in-app.
